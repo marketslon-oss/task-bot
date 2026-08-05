@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import json
 from datetime import datetime
 import gspread
 from fastapi import FastAPI, Form, Request
@@ -13,8 +15,15 @@ app = FastAPI()
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010
 
-# Подключение к Google Таблицам
-gc = gspread.service_account(filename="driver-bot-personal-d10024426fab.json")
+# =================================================================
+# ИСПРАВЛЕНИЕ 1: Безопасное подключение к Google Таблицам для Render
+# =================================================================
+if "GOOGLE_CREDENTIALS" in os.environ:
+    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+    gc = gspread.service_account_from_dict(creds_dict)
+else:
+    gc = gspread.service_account(filename="driver-bot-personal-d10024426fab.json")
+
 sh = gc.open("tasks_db")
 tasks_sheet = sh.worksheet("Tasks")
 analytics_sheet = sh.worksheet("Analytics")
@@ -208,4 +217,8 @@ if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # =================================================================
+    # ИСПРАВЛЕНИЕ 2: Хост 0.0.0.0 и динамический порт для Render
+    # =================================================================
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
