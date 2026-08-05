@@ -24,38 +24,119 @@ else:
 
 sh = gc.open("tasks_db")
 tasks_sheet = sh.worksheet("Tasks")
-analytics_sheet = sh.worksheet("Analytics")
+analytics_sheet = sh.worksheet("Analytics/Logs" if "Analytics/Logs" in [w.title for w in sh.worksheets()] else "Analytics")
+
+try:
+    categories_sheet = sh.worksheet("Categories")
+except Exception:
+    categories_sheet = None
+
 
 # ==================== ГЛАВНЫЙ ЭКРАН — ДАШБОРД ====================
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     tasks = tasks_sheet.get_all_records()
     
-    # Считаем общую статистику
-    total_in_progress = sum(1 for t in tasks if t.get('Status') == 'in_progress')
-    total_new = sum(1 for t in tasks if t.get('Status') == 'new')
+    total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
+    total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
-    # Группируем задачи по категориям (например, по префиксу или названию, или выделим Amazon / OKH)
-    # Предположим, что в заголовке или отдельном поле указан проект. Для примера разделим по ключевым словам.
-    amazon_tasks = [t for t in tasks if "amazon" in str(t.get('Title', '')).lower() or "амазон" in str(t.get('Title', '')).lower()]
-    okh_tasks = [t for t in tasks if "okh" in str(t.get('Title', '')).lower() or "окх" in str(t.get('Title', '')).lower()]
-    other_tasks = [t for t in tasks if t not in amazon_tasks and t not in okh_tasks]
+    # Собираем все категории: сначала из листа Categories, плюс те, что реально есть в задачах
+    category_names = []
+    if categories_sheet:
+        cat_records = categories_sheet.get_all_records()
+        for row in cat_records:
+            cat_val = row.get('Name') or row.get('Project') or list(row.values())[0]
+            if cat_val:
+                category_names.append(str(cat_val).strip())
+    
+    # Также проверяем проекты прямо из задач, чтобы динамически созданные сразу появлялись
+    for task in tasks:
+        cat = str(task.get('Category', '')).strip()
+        if cat and cat not in category_names:
+            category_names.append(cat)
+
+    if not category_names:
+        category_names = ["Amazon", "OKH"]
+
+    # Группируем задачи по категориям
+    grouped_tasks = {cat: [] for cat in category_names}
+    other_tasks = []
+
+    for task in tasks:
+        task_cat = str(task.get('Category', '')).strip()
+        matched = False
+        for cat in category_names:
+            if cat.lower() == task_cat.lower() or cat.lower() in str(task.get('Title', '')).lower():
+                grouped_tasks[cat].append(task)
+                matched = True
+                break
+        if not matched:
+            other_tasks.append(task)
 
     def render_task_rows(task_list):
         if not task_list:
             return '<tr><td colspan="4" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
         res = ""
         for task in task_list:
-            status_color = "warning" if task.get('Status') == "new" else "success" if task.get('Status') == "in_progress" else "secondary"
+            status = str(task.get('Status', '')).strip()
+            status_color = "warning" if status == "new" else "success" if status == "in_progress" else "secondary"
             res += f"""
                 <tr>
                     <td>#{task.get('id')}</td>
                     <td><b>{task.get('Title')}</b><br><small class="text-muted">{task.get('Description')}</small></td>
-                    <td><span class="badge bg-{status_color}">{task.get('Status')}</span></td>
+                    <td><span class="badge bg-{status_color}">{status}</span></td>
                     <td>{task.get('Assignee') if task.get('Assignee') else '—'}</td>
                 </tr>
             """
         return res
+
+    accordions_html = ""
+    for idx, cat in enumerate(category_names):
+        cat_tasks = grouped_tasks[cat]
+        collapse_id = f"collapse_{idx}"
+        show_class = "show" if idx == 0 else ""
+        accordions_html += f"""
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#{collapse_id}">
+                    <h5 class="mb-0">📁 {cat} ({len(cat_tasks)})</h5>
+                    <span>▼ Развернуть</span>
+                </div>
+                <div id="{collapse_id}" class="collapse {show_class}">
+                    <div class="card-body">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
+                            </thead>
+                            <tbody>
+                                {render_task_rows(cat_tasks)}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        """
+
+    if other_tasks:
+        accordions_html += f"""
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#collapse_other">
+                    <h5 class="mb-0">📌 Другие задачи ({len(other_tasks)})</h5>
+                    <span>▼ Развернуть</span>
+                </div>
+                <div id="collapse_other" class="collapse">
+                    <div class="card-body">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
+                            </thead>
+                            <tbody>
+                                {render_task_rows(other_tasks)}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        """
 
     dashboard_html = f"""
     <!DOCTYPE html>
@@ -67,13 +148,11 @@ async def dashboard(request: Request):
     </head>
     <body class="bg-light">
         <div class="container mt-4" style="max-width: 900px;">
-            <!-- Шапка с переключателем -->
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>📊 Дашборд управления задачами</h2>
                 <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
             </div>
             
-            <!-- Блок общей инфы сверху -->
             <div class="row text-center mb-4">
                 <div class="col-md-6">
                     <div class="card shadow-sm p-3 bg-white">
@@ -89,65 +168,7 @@ async def dashboard(request: Request):
                 </div>
             </div>
 
-            <!-- БЛОК: AMAZON (Аккордеон) -->
-            <div class="card shadow-sm mb-3">
-                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#amazonCollapse">
-                    <h5 class="mb-0">📦 Запрос Amazon ({len(amazon_tasks)})</h5>
-                    <span>▼ Развернуть</span>
-                </div>
-                <div id="amazonCollapse" class="collapse show">
-                    <div class="card-body">
-                        <table class="table table-hover align-middle mb-0">
-                            <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
-                            </thead>
-                            <tbody>
-                                {render_task_rows(amazon_tasks)}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- БЛОК: OKH (Аккордеон) -->
-            <div class="card shadow-sm mb-3">
-                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#okhCollapse">
-                    <h5 class="mb-0">🏢 Запрос OKH ({len(okh_tasks)})</h5>
-                    <span>▼ Развернуть</span>
-                </div>
-                <div id="okhCollapse" class="collapse">
-                    <div class="card-body">
-                        <table class="table table-hover align-middle mb-0">
-                            <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
-                            </thead>
-                            <tbody>
-                                {render_task_rows(okh_tasks)}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- БЛОК: Остальные / Общие задачи (Аккордеон) -->
-            <div class="card shadow-sm mb-3">
-                <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#otherCollapse">
-                    <h5 class="mb-0">📌 Общие / Другие задачи ({len(other_tasks)})</h5>
-                    <span>▼ Развернуть</span>
-                </div>
-                <div id="otherCollapse" class="collapse">
-                    <div class="card-body">
-                        <table class="table table-hover align-middle mb-0">
-                            <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
-                            </thead>
-                            <tbody>
-                                {render_task_rows(other_tasks)}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+            {accordions_html}
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -160,7 +181,14 @@ async def dashboard(request: Request):
 # ==================== СТРАНИЦА СОЗДАНИЯ ЗАДАЧИ ====================
 @app.get("/create", response_class=HTMLResponse)
 async def create_page(request: Request):
-    create_html = """
+    category_options = ""
+    if categories_sheet:
+        for row in categories_sheet.get_all_records():
+            cat_val = row.get('Name') or row.get('Project') or list(row.values())[0]
+            if cat_val:
+                category_options += f'<option value="{cat_val}">{cat_val}</option>'
+
+    create_html = f"""
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -177,35 +205,27 @@ async def create_page(request: Request):
             
             <form action="/create-task" method="post" class="card p-4 shadow-sm bg-white">
                 <div class="mb-3">
-                    <label class="form-label">Шаблон постоянной задачи:</label>
-                    <select class="form-select mb-2" id="templateSelect" onchange="fillTemplate()">
-                        <option value="">-- Выберите шаблон (опционально) --</option>
-                        <option value="Amazon: Проверка листинга|Проверить актуальные цены и остатки на Amazon по списку SKU.">Amazon: Проверка листинга</option>
-                        <option value="OKH: Сверка отчетов|Выгрузить еженедельный финансовый отчет по системе OKH.">OKH: Сверка отчетов</option>
+                    <label class="form-label">Выберите проект из списка (или введите новый ниже):</label>
+                    <select name="category_select" class="form-select mb-2" onchange="document.getElementById('customCategory').value=this.value;">
+                        <option value="">-- Выберите существующий проект --</option>
+                        {category_options}
                     </select>
                 </div>
                 <div class="mb-3">
+                    <label class="form-label">Или введите/измените название проекта:</label>
+                    <input type="text" name="category" id="customCategory" class="form-control" placeholder="Например: НовийПроект, Розетка, Логистика" required>
+                </div>
+                <div class="mb-3">
                     <label class="form-label">Заголовок задачи:</label>
-                    <input type="text" name="title" id="taskTitle" class="form-control" required>
+                    <input type="text" name="title" class="form-control" required>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Описание задачи:</label>
-                    <textarea name="description" id="taskDesc" class="form-control" rows="4" required></textarea>
+                    <textarea name="description" class="form-control" rows="4" required></textarea>
                 </div>
                 <button type="submit" class="btn btn-primary w-100">Опубликовать в Telegram</button>
             </form>
         </div>
-
-        <script>
-            function fillTemplate() {
-                let val = document.getElementById("templateSelect").value;
-                if (val) {
-                    let parts = val.split("|");
-                    document.getElementById("taskTitle").value = parts[0];
-                    document.getElementById("taskDesc").value = parts[1];
-                }
-            }
-        </script>
     </body>
     </html>
     """
@@ -213,11 +233,13 @@ async def create_page(request: Request):
 
 
 @app.post("/create-task")
-async def create_task(title: str = Form(...), description: str = Form(...)):
+async def create_task(category: str = Form(...), title: str = Form(...), description: str = Form(...)):
     bot = Bot(token=TOKEN)
     
     all_rows = tasks_sheet.get_all_values()
     task_id = len(all_rows) if len(all_rows) > 0 else 1
+    
+    full_title = f"[{category.strip()}] {title}"
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -227,12 +249,13 @@ async def create_task(title: str = Form(...), description: str = Form(...)):
 
     message = await bot.send_message(
         chat_id=GROUP_ID,
-        text=f"🔥 <b>{title}</b>\n\n{description}",
+        text=f"🔥 <b>{full_title}</b>\n\n{description}",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
     
-    tasks_sheet.append_row([task_id, title, description, "new", "", message.message_id])
+    # Сохраняем задачу, в 7-ю колонку записываем проект/категорию
+    tasks_sheet.append_row([task_id, full_title, description, "new", "", message.message_id, category.strip()])
     await bot.session.close()
     
     return HTMLResponse(content="""
