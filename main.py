@@ -15,9 +15,7 @@ app = FastAPI()
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010
 
-# =================================================================
-# ИСПРАВЛЕНИЕ 1: Безопасное подключение к Google Таблицам для Render
-# =================================================================
+# Подключение к Google Таблицам
 if "GOOGLE_CREDENTIALS" in os.environ:
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
     gc = gspread.service_account_from_dict(creds_dict)
@@ -28,95 +26,191 @@ sh = gc.open("tasks_db")
 tasks_sheet = sh.worksheet("Tasks")
 analytics_sheet = sh.worksheet("Analytics")
 
-# Главная страница (Форма создания + ссылки на дашборд)
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <title>Биржа задач — Панель управления</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="bg-light">
-    <div class="container mt-5" style="max-width: 700px;">
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2>📢 Биржа задач</h2>
-            <a href="/dashboard" class="btn btn-outline-primary">📊 Открыть Дашборд аналитики</a>
-        </div>
-        
-        <form action="/create-task" method="post" class="card p-4 shadow-sm">
-            <h4 class="mb-3">Создать новое задание</h4>
-            <div class="mb-3">
-                <label class="form-label">Заголовок задачи:</label>
-                <input type="text" name="title" class="form-control" required>
-            </div>
-            <div class="mb-3">
-                <label class="form-label">Описание задачи:</label>
-                <textarea name="description" class="form-control" rows="4" required></textarea>
-            </div>
-            <button type="submit" class="btn btn-primary w-100">Опубликовать в Telegram</button>
-        </form>
-    </div>
-</body>
-</html>
-"""
-
+# ==================== ГЛАВНЫЙ ЭКРАН — ДАШБОРД ====================
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return HTMLResponse(content=HTML_TEMPLATE)
-
-# Страница Веб-Дашборда аналитики
-@app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     tasks = tasks_sheet.get_all_records()
     
-    rows_html = ""
-    for task in tasks:
-        status_color = "warning" if task['Status'] == "new" else "success" if task['Status'] == "in_progress" else "secondary"
-        rows_html += f"""
-            <tr>
-                <td>{task['id']}</td>
-                <td><b>{task['Title']}</b><br><small class="text-muted">{task['Description']}</small></td>
-                <td><span class="badge bg-{status_color}">{task['Status']}</span></td>
-                <td>{task['Assignee'] if task['Assignee'] else '—'}</td>
-            </tr>
-        """
+    # Считаем общую статистику
+    total_in_progress = sum(1 for t in tasks if t.get('Status') == 'in_progress')
+    total_new = sum(1 for t in tasks if t.get('Status') == 'new')
+
+    # Группируем задачи по категориям (например, по префиксу или названию, или выделим Amazon / OKH)
+    # Предположим, что в заголовке или отдельном поле указан проект. Для примера разделим по ключевым словам.
+    amazon_tasks = [t for t in tasks if "amazon" in str(t.get('Title', '')).lower() or "амазон" in str(t.get('Title', '')).lower()]
+    okh_tasks = [t for t in tasks if "okh" in str(t.get('Title', '')).lower() or "окх" in str(t.get('Title', '')).lower()]
+    other_tasks = [t for t in tasks if t not in amazon_tasks and t not in okh_tasks]
+
+    def render_task_rows(task_list):
+        if not task_list:
+            return '<tr><td colspan="4" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
+        res = ""
+        for task in task_list:
+            status_color = "warning" if task.get('Status') == "new" else "success" if task.get('Status') == "in_progress" else "secondary"
+            res += f"""
+                <tr>
+                    <td>#{task.get('id')}</td>
+                    <td><b>{task.get('Title')}</b><br><small class="text-muted">{task.get('Description')}</small></td>
+                    <td><span class="badge bg-{status_color}">{task.get('Status')}</span></td>
+                    <td>{task.get('Assignee') if task.get('Assignee') else '—'}</td>
+                </tr>
+            """
+        return res
 
     dashboard_html = f"""
     <!DOCTYPE html>
     <html lang="ru">
     <head>
         <meta charset="UTF-8">
-        <title>Дашборд аналитики задач</title>
+        <title>Дашборд — Биржа задач</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-5">
+        <div class="container mt-4" style="max-width: 900px;">
+            <!-- Шапка с переключателем -->
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2>📊 Дашборд аналитики и статусов</h2>
-                <a href="/" class="btn btn-secondary">← Назад к созданию задач</a>
+                <h2>📊 Дашборд управления задачами</h2>
+                <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
             </div>
             
-            <div class="card shadow-sm p-3">
-                <table class="table table-hover align-middle">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>ID</th>
-                            <th>Задача</th>
-                            <th>Статус</th>
-                            <th>Исполнитель(-и)</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows_html if rows_html else '<tr><td colspan="4" class="text-center">Задач пока нет</td></tr>'}
-                    </tbody>
-                </table>
+            <!-- Блок общей инфы сверху -->
+            <div class="row text-center mb-4">
+                <div class="col-md-6">
+                    <div class="card shadow-sm p-3 bg-white">
+                        <h5 class="text-muted">Новых задач</h5>
+                        <h3 class="text-warning">{total_new}</h3>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card shadow-sm p-3 bg-white">
+                        <h5 class="text-muted">Всего в работе</h5>
+                        <h3 class="text-success">{total_in_progress}</h3>
+                    </div>
+                </div>
+            </div>
+
+            <!-- БЛОК: AMAZON (Аккордеон) -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#amazonCollapse">
+                    <h5 class="mb-0">📦 Запрос Amazon ({len(amazon_tasks)})</h5>
+                    <span>▼ Развернуть</span>
+                </div>
+                <div id="amazonCollapse" class="collapse show">
+                    <div class="card-body">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
+                            </thead>
+                            <tbody>
+                                {render_task_rows(amazon_tasks)}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- БЛОК: OKH (Аккордеон) -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#okhCollapse">
+                    <h5 class="mb-0">🏢 Запрос OKH ({len(okh_tasks)})</h5>
+                    <span>▼ Развернуть</span>
+                </div>
+                <div id="okhCollapse" class="collapse">
+                    <div class="card-body">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
+                            </thead>
+                            <tbody>
+                                {render_task_rows(okh_tasks)}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- БЛОК: Остальные / Общие задачи (Аккордеон) -->
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#otherCollapse">
+                    <h5 class="mb-0">📌 Общие / Другие задачи ({len(other_tasks)})</h5>
+                    <span>▼ Развернуть</span>
+                </div>
+                <div id="otherCollapse" class="collapse">
+                    <div class="card-body">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead>
+                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
+                            </thead>
+                            <tbody>
+                                {render_task_rows(other_tasks)}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
+
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     </body>
     </html>
     """
     return HTMLResponse(content=dashboard_html)
+
+
+# ==================== СТРАНИЦА СОЗДАНИЯ ЗАДАЧИ ====================
+@app.get("/create", response_class=HTMLResponse)
+async def create_page(request: Request):
+    create_html = """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>Выставить задачу</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body class="bg-light">
+        <div class="container mt-5" style="max-width: 600px;">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2>✍️ Создать новое задание</h2>
+                <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
+            </div>
+            
+            <form action="/create-task" method="post" class="card p-4 shadow-sm bg-white">
+                <div class="mb-3">
+                    <label class="form-label">Шаблон постоянной задачи:</label>
+                    <select class="form-select mb-2" id="templateSelect" onchange="fillTemplate()">
+                        <option value="">-- Выберите шаблон (опционально) --</option>
+                        <option value="Amazon: Проверка листинга|Проверить актуальные цены и остатки на Amazon по списку SKU.">Amazon: Проверка листинга</option>
+                        <option value="OKH: Сверка отчетов|Выгрузить еженедельный финансовый отчет по системе OKH.">OKH: Сверка отчетов</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Заголовок задачи:</label>
+                    <input type="text" name="title" id="taskTitle" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Описание задачи:</label>
+                    <textarea name="description" id="taskDesc" class="form-control" rows="4" required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Опубликовать в Telegram</button>
+            </form>
+        </div>
+
+        <script>
+            function fillTemplate() {
+                let val = document.getElementById("templateSelect").value;
+                if (val) {
+                    let parts = val.split("|");
+                    document.getElementById("taskTitle").value = parts[0];
+                    document.getElementById("taskDesc").value = parts[1];
+                }
+            }
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=create_html)
+
 
 @app.post("/create-task")
 async def create_task(title: str = Form(...), description: str = Form(...)):
@@ -125,7 +219,6 @@ async def create_task(title: str = Form(...), description: str = Form(...)):
     all_rows = tasks_sheet.get_all_values()
     task_id = len(all_rows) if len(all_rows) > 0 else 1
     
-    # Кнопка остается активной (НЕ удаляется при клике)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Принять в работу", callback_data=f"take_{task_id}")]
@@ -139,18 +232,18 @@ async def create_task(title: str = Form(...), description: str = Form(...)):
         parse_mode="HTML"
     )
     
-    # Сохраняем задачу в Google Таблицу (Assignee делаем пустым/накопительным)
     tasks_sheet.append_row([task_id, title, description, "new", "", message.message_id])
-    
     await bot.session.close()
+    
     return HTMLResponse(content="""
         <div style="text-align:center; margin-top:50px; font-family:sans-serif;">
             <h3>✅ Задача успешно создана и опубликована в группе!</h3>
-            <a href="/">Создать еще одну</a> | <a href="/dashboard">Открыть дашборд</a>
+            <a href="/">На главную (Дашборд)</a> | <a href="/create">Создать еще</a>
         </div>
     """)
 
-# Логика бота для мульти-кликов (кнопка активна, фиксируем каждого откликнувшегося)
+
+# ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
@@ -166,7 +259,7 @@ async def start_telegram_bot():
         task_data = None
         
         for idx, row in enumerate(rows, start=2):
-            if int(row["id"]) == task_id:
+            if int(row.get("id", 0)) == task_id:
                 target_row_index = idx
                 task_data = row
                 break
@@ -175,8 +268,7 @@ async def start_telegram_bot():
             await callback.answer(text="❌ Задача не найдена!", show_alert=True)
             return
 
-        # Дописываем нового исполнителя через запятую, если задачу уже кто-то брал
-        current_assignees = str(task_data["Assignee"])
+        current_assignees = str(task_data.get("Assignee", ""))
         if current_assignees:
             if user_name not in current_assignees.split(", "):
                 new_assignees = current_assignees + f", {user_name}"
@@ -185,45 +277,26 @@ async def start_telegram_bot():
         else:
             new_assignees = user_name
 
-        # Обновляем статус на "in_progress" и добавляем исполнителя в таблицу
         tasks_sheet.update_cell(target_row_index, 4, "in_progress")
         tasks_sheet.update_cell(target_row_index, 5, new_assignees)
 
-        # Пишем подробный лог в аналитику
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         analytics_sheet.append_row([current_time, task_id, user_name, user_id, "accepted_task"])
 
-        # Уведомляем пользователя всплывающим окном
-        await callback.answer(text=f"✅ {user_name}, вы добавлены к исполнению задачи!", show_alert=True)
+        await callback.answer(text=f"✅ {user_name}, вы добавлены к исполнению!", show_alert=True)
         
-        # Обновляем текст в сообщении чата, показывая список текущих исполнителей, но КНОПКУ НЕ УДАЛЯЕМ!
-        current_text = callback.message.html_text.split("\n\n🚀")[0]  # Берем чистый текст задачи
+        current_text = callback.message.html_text.split("\n\n🚀")[0]
         new_text = current_text + f"\n\n🚀 <b>В работе у:</b> {new_assignees}"
         
-        # Перезаписываем сообщение, оставляя клавиатуру (кнопку) активной
         try:
             await callback.message.edit_text(text=new_text, reply_markup=callback.message.reply_markup, parse_mode="HTML")
         except Exception:
-            pass # Игнорируем ошибку, если текст не изменился
+            pass
 
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    import threading
-    
-    def run_bot():
-        asyncio.run(start_telegram_bot())
-        
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-
-    # =================================================================
-    # ИСПРАВЛЕНИЕ 2: Хост 0.0.0.0 и динамический порт для Render
-    # =================================================================
-  # ==================== АВТОМАТИЧЕСКИЙ СТАРТ БОТА С FASTAPI ====================
 @app.on_event("startup")
-async def startup_event():
-    # Запускаем поллинг бота в фоновом режиме внутри асинхронного цикла FastAPI
+async def on_startup():
     asyncio.create_task(start_telegram_bot())
 
 if __name__ == "__main__":
