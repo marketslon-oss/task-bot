@@ -40,7 +40,6 @@ async def dashboard(request: Request):
     total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
     total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
-    # Собираем все категории: сначала из листа Categories, плюс те, что реально есть в задачах
     category_names = []
     if categories_sheet:
         cat_records = categories_sheet.get_all_records()
@@ -49,7 +48,6 @@ async def dashboard(request: Request):
             if cat_val:
                 category_names.append(str(cat_val).strip())
     
-    # Также проверяем проекты прямо из задач, чтобы динамически созданные сразу появлялись
     for task in tasks:
         cat = str(task.get('Category', '')).strip()
         if cat and cat not in category_names:
@@ -58,7 +56,6 @@ async def dashboard(request: Request):
     if not category_names:
         category_names = ["Amazon", "OKH"]
 
-    # Группируем задачи по категориям
     grouped_tasks = {cat: [] for cat in category_names}
     other_tasks = []
 
@@ -75,15 +72,18 @@ async def dashboard(request: Request):
 
     def render_task_rows(task_list):
         if not task_list:
-            return '<tr><td colspan="4" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
+            return '<tr><td colspan="5" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
         res = ""
         for task in task_list:
             status = str(task.get('Status', '')).strip()
             status_color = "warning" if status == "new" else "success" if status == "in_progress" else "secondary"
+            pay = task.get('Payment', '')
+            pay_str = f"<b>{pay} грн</b>" if pay else "—"
             res += f"""
                 <tr>
                     <td>#{task.get('id')}</td>
                     <td><b>{task.get('Title')}</b><br><small class="text-muted">{task.get('Description')}</small></td>
+                    <td>{pay_str}</td>
                     <td><span class="badge bg-{status_color}">{status}</span></td>
                     <td>{task.get('Assignee') if task.get('Assignee') else '—'}</td>
                 </tr>
@@ -105,7 +105,7 @@ async def dashboard(request: Request):
                     <div class="card-body">
                         <table class="table table-hover align-middle mb-0">
                             <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
+                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th></tr>
                             </thead>
                             <tbody>
                                 {render_task_rows(cat_tasks)}
@@ -127,7 +127,7 @@ async def dashboard(request: Request):
                     <div class="card-body">
                         <table class="table table-hover align-middle mb-0">
                             <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Статус</th><th>Исполнитель</th></tr>
+                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th></tr>
                             </thead>
                             <tbody>
                                 {render_task_rows(other_tasks)}
@@ -147,7 +147,7 @@ async def dashboard(request: Request):
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-4" style="max-width: 900px;">
+        <div class="container mt-4" style="max-width: 950px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>📊 Дашборд управления задачами</h2>
                 <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
@@ -205,23 +205,27 @@ async def create_page(request: Request):
             
             <form action="/create-task" method="post" class="card p-4 shadow-sm bg-white">
                 <div class="mb-3">
-                    <label class="form-label">Выберите проект из списка (или введите новый ниже):</label>
+                    <label class="form-label">Выберите проект из списка (или введите ниже):</label>
                     <select name="category_select" class="form-select mb-2" onchange="document.getElementById('customCategory').value=this.value;">
                         <option value="">-- Выберите существующий проект --</option>
                         {category_options}
                     </select>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Или введите/измените название проекта:</label>
-                    <input type="text" name="category" id="customCategory" class="form-control" placeholder="Например: НовийПроект, Розетка, Логистика" required>
+                    <label class="form-label">Название проекта:</label>
+                    <input type="text" name="category" id="customCategory" class="form-control" placeholder="Например: MEXC, Amazon, Розетка" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Сумма оплаты (грн):</label>
+                    <input type="text" name="payment" class="form-control" placeholder="Например: 500 или 555" required>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Заголовок задачи:</label>
-                    <input type="text" name="title" class="form-control" required>
+                    <input type="text" name="title" class="form-control" placeholder="Например: Нужно 6 человек, фото, видео" required>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">Описание задачи:</label>
-                    <textarea name="description" class="form-control" rows="4" required></textarea>
+                    <textarea name="description" class="form-control" rows="3" required></textarea>
                 </div>
                 <button type="submit" class="btn btn-primary w-100">Опубликовать в Telegram</button>
             </form>
@@ -233,13 +237,20 @@ async def create_page(request: Request):
 
 
 @app.post("/create-task")
-async def create_task(category: str = Form(...), title: str = Form(...), description: str = Form(...)):
+async def create_task(category: str = Form(...), payment: str = Form(...), title: str = Form(...), description: str = Form(...)):
     bot = Bot(token=TOKEN)
     
     all_rows = tasks_sheet.get_all_values()
     task_id = len(all_rows) if len(all_rows) > 0 else 1
     
-    full_title = f"[{category.strip()}] {title}"
+    clean_category = category.strip()
+    clean_title = title.strip()
+    
+    # Красивый заголовок без скобок: 🔥 MEXC — Нужно 6 человек...
+    msg_header = f"🔥 <b>{clean_category}</b> — {clean_title}"
+    msg_payment = f"💰 <b>Оплата: {payment.strip()} грн</b> 💵🪙"
+    
+    message_text = f"{msg_header}\n\n{description}\n\n{msg_payment}"
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -249,13 +260,13 @@ async def create_task(category: str = Form(...), title: str = Form(...), descrip
 
     message = await bot.send_message(
         chat_id=GROUP_ID,
-        text=f"🔥 <b>{full_title}</b>\n\n{description}",
+        text=message_text,
         reply_markup=keyboard,
         parse_mode="HTML"
     )
     
-    # Сохраняем задачу, в 7-ю колонку записываем проект/категорию
-    tasks_sheet.append_row([task_id, full_title, description, "new", "", message.message_id, category.strip()])
+    # Сохраняем в таблицу: ID, Title, Description, Status, Assignee, Message_ID, Category, Payment
+    tasks_sheet.append_row([task_id, clean_title, description, "new", "", message.message_id, clean_category, payment.strip()])
     await bot.session.close()
     
     return HTMLResponse(content="""
@@ -308,8 +319,14 @@ async def start_telegram_bot():
 
         await callback.answer(text=f"✅ {user_name}, вы добавлены к исполнению!", show_alert=True)
         
-        current_text = callback.message.html_text.split("\n\n🚀")[0]
-        new_text = current_text + f"\n\n🚀 <b>В работе у:</b> {new_assignees}"
+        # Обновляем текст в Telegram, сохраняя красивый вид с оплатой и списком исполнителей
+        original_text = callback.message.html_text
+        if "\n\n🚀" in original_text:
+            base_text = original_text.split("\n\n🚀")[0]
+        else:
+            base_text = original_text
+            
+        new_text = base_text + f"\n\n🚀 <b>В работе у:</b> {new_assignees}"
         
         try:
             await callback.message.edit_text(text=new_text, reply_markup=callback.message.reply_markup, parse_mode="HTML")
