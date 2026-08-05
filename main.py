@@ -150,7 +150,10 @@ async def dashboard(request: Request):
         <div class="container mt-4" style="max-width: 950px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>📊 Дашборд управления задачами</h2>
-                <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
+                <div>
+                    <a href="/drops" class="btn btn-outline-dark me-2">👥 Дропы</a>
+                    <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
+                </div>
             </div>
             
             <div class="row text-center mb-4">
@@ -176,6 +179,68 @@ async def dashboard(request: Request):
     </html>
     """
     return HTMLResponse(content=dashboard_html)
+
+
+# ==================== ВКЛАДКА «ДРОПЫ» (БАЗА ЛЮДЕЙ) ====================
+@app.get("/drops", response_class=HTMLResponse)
+async def drops_page(request: Request):
+    # Собираем уникальных пользователей из аналитики
+    logs = analytics_sheet.get_all_records()
+    drops_dict = {}
+    
+    for row in logs:
+        u_name = str(row.get('User_Name', '')).strip()
+        u_id = str(row.get('User_ID', '')).strip()
+        if u_id and u_name:
+            drops_dict[u_id] = u_name
+
+    rows_html = ""
+    if not drops_dict:
+        rows_html = '<tr><td colspan="3" class="text-center text-muted">Пока нет активных дропов</td></tr>'
+    else:
+        for u_id, u_name in drops_dict.items():
+            rows_html += f"""
+                <tr>
+                    <td><b>{u_name}</b></td>
+                    <td><code>{u_id}</code></td>
+                    <td><a href="tg://user?id={u_id}" class="btn btn-sm btn-outline-primary">💬 Написать в ТГ</a></td>
+                </tr>
+            """
+
+    drops_html = f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>Список Дропов</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body class="bg-light">
+        <div class="container mt-4" style="max-width: 800px;">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2>👥 Список дропов (Исполнителей)</h2>
+                <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
+            </div>
+            
+            <div class="card shadow-sm p-3 bg-white">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>Имя</th>
+                            <th>Telegram ID</th>
+                            <th>Связь</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=drops_html)
 
 
 # ==================== СТРАНИЦА СОЗДАНИЯ ЗАДАЧИ ====================
@@ -220,12 +285,8 @@ async def create_page(request: Request):
                     <input type="text" name="payment" class="form-control" placeholder="Например: 500 или 555" required>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Заголовок задачи:</label>
-                    <input type="text" name="title" class="form-control" placeholder="Например: Нужно 6 человек, фото, видео" required>
-                </div>
-                <div class="mb-3">
                     <label class="form-label">Описание задачи:</label>
-                    <textarea name="description" class="form-control" rows="3" required></textarea>
+                    <textarea name="description" class="form-control" rows="4" placeholder="Например: Нужно 6 человек, сделать фото и видео верификации" required></textarea>
                 </div>
                 <button type="submit" class="btn btn-primary w-100">Опубликовать в Telegram</button>
             </form>
@@ -237,20 +298,20 @@ async def create_page(request: Request):
 
 
 @app.post("/create-task")
-async def create_task(category: str = Form(...), payment: str = Form(...), title: str = Form(...), description: str = Form(...)):
+async def create_task(category: str = Form(...), payment: str = Form(...), description: str = Form(...)):
     bot = Bot(token=TOKEN)
     
     all_rows = tasks_sheet.get_all_values()
     task_id = len(all_rows) if len(all_rows) > 0 else 1
     
     clean_category = category.strip()
-    clean_title = title.strip()
     
-    # Красивый заголовок без скобок: 🔥 MEXC — Нужно 6 человек...
-    msg_header = f"🔥 <b>{clean_category}</b> — {clean_title}"
-    msg_payment = f"💰 <b>Оплата: {payment.strip()} грн</b> 💵🪙"
+    # Заголовок теперь берется из описания или устанавливается стандартным, без отдельного поля
+    msg_header = f"🔥 <b>{clean_category}</b>"
+    # Мешочки с деньгами: 2 спереди и 2 сзади
+    msg_payment = f"💰💰 <b>Оплата: {payment.strip()} грн</b> 💰💰"
     
-    message_text = f"{msg_header}\n\n{description}\n\n{msg_payment}"
+    message_text = f"{msg_header}\n\n{description.strip()}\n\n{msg_payment}"
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -265,8 +326,7 @@ async def create_task(category: str = Form(...), payment: str = Form(...), title
         parse_mode="HTML"
     )
     
-    # Сохраняем в таблицу: ID, Title, Description, Status, Assignee, Message_ID, Category, Payment
-    tasks_sheet.append_row([task_id, clean_title, description, "new", "", message.message_id, clean_category, payment.strip()])
+    tasks_sheet.append_row([task_id, clean_category, description.strip(), "new", "", message.message_id, clean_category, payment.strip()])
     await bot.session.close()
     
     return HTMLResponse(content="""
@@ -319,7 +379,6 @@ async def start_telegram_bot():
 
         await callback.answer(text=f"✅ {user_name}, вы добавлены к исполнению!", show_alert=True)
         
-        # Обновляем текст в Telegram, сохраняя красивый вид с оплатой и списком исполнителей
         original_text = callback.message.html_text
         if "\n\n🚀" in original_text:
             base_text = original_text.split("\n\n🚀")[0]
