@@ -10,7 +10,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo
 
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010
@@ -377,10 +377,11 @@ async def dashboard(request: Request):
 
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     </body>
+    
     </html>
     """
     return HTMLResponse(content=dashboard_html)
-    @app.get("/close-task/{task_id}")
+@app.get("/close-task/{task_id}")
 async def close_task(task_id: int):
     rows = tasks_sheet.get_all_records()
     for idx, row in enumerate(rows, start=2):
@@ -418,22 +419,70 @@ async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
     return RedirectResponse(url="/drops", status_code=303)
 
 
+# Страница мини-апп рулетки, которая открывается прямо в Telegram
+@app.get("/roulette", response_class=HTMLResponse)
+async def roulette_page(request: Request):
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html lang="uk">
+    <head>
+        <meta charset="UTF-8">
+        <title>Колесо Фортуни</title>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            body { background: #121212; color: #fff; font-family: sans-serif; text-align: center; padding-top: 30px; }
+            .wheel-container { position: relative; width: 280px; height: 280px; margin: 20px auto; }
+            #wheel { width: 100%; height: 100%; border-radius: 50%; border: 6px solid #ffc107; background: conic-gradient(#ff5722 0deg 90deg, #4caf50 90deg 180deg, #2196f3 180deg 270deg, #9c27b0 270deg 360deg); transition: transform 4s cubic-bezier(0.15, 0.85, 0.15, 1); }
+            .pointer { position: absolute; top: -15px; left: 50%; transform: translateX(-50%); width: 0; height: 0; border-left: 12px solid transparent; border-right: 12px solid transparent; border-bottom: 25px solid #ffeb3b; z-index: 10; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h3>🎰 РОЗІГРУШ ПРИЗІВ</h3>
+            <p class="text-muted">Крутіть колесо, щоб виграти 250, 150 або 50 грн!</p>
+            <div class="wheel-container">
+                <div class="pointer"></div>
+                <div id="wheel"></div>
+            </div>
+            <button id="spinBtn" onclick="spinWheel()" class="btn btn-warning btn-lg w-100 fw-bold mt-3">КРУТИТИ КОЛЕСО!</button>
+            <div id="result" class="mt-4 fs-4 fw-bold text-success"></div>
+        </div>
+        <script>
+            let tg = window.Telegram.WebApp;
+            tg.expand();
+            let spun = false;
+            function spinWheel() {
+                if (spun) return;
+                spun = true;
+                document.getElementById('spinBtn').disabled = true;
+                let randomDeg = Math.floor(Math.random() * 3600) + 1440;
+                let wheel = document.getElementById('wheel');
+                wheel.style.transform = `rotate(${randomDeg}deg)`;
+                setTimeout(() => {
+                    let ticket = Math.floor(1000 + Math.random() * 9000);
+                    document.getElementById('result.innerHTML = `🎉 Вітаю! Ваш номер: <b>${ticket}</b>`;
+                    if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
+                        // отправка данных о выигрыше обратно боту или на сервер при желании
+                    }
+                }, 4000);
+            }
+        </script>
+    </body>
+    </html>
+    """)
+
+
 @app.get("/promo-setup", response_class=HTMLResponse)
 async def promo_setup(request: Request):
     promo_rows = promo_sheet.get_all_values()[1:] if promo_sheet else []
-    
     rows_html = ""
     for r in promo_rows:
         date_reg = r[0] if len(r) > 0 else ""
         name = r[2] if len(r) > 2 else "Без имени"
         uname = r[3] if len(r) > 3 else ""
         ticket = r[4] if len(r) > 4 else ""
-        
-        if uname:
-            chat_link = f'<a href="https://t.me/{uname}" target="_blank">@{uname}</a>'
-        else:
-            chat_link = "—"
-
+        chat_link = f'<a href="https://t.me/{uname}" target="_blank">@{uname}</a>' if uname else "—"
         rows_html += f"<tr><td>{date_reg}</td><td><b>{name}</b><br><small>{chat_link}</small></td><td><span class='badge bg-success fs-6'>{ticket}</span></td></tr>"
 
     return HTMLResponse(f"""
@@ -447,16 +496,16 @@ async def promo_setup(request: Request):
     <body class="bg-light">
         <div class="container mt-5" style="max-width: 800px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2>🎰 Управление акцией и статистика</h2>
+                <h2>🎰 Управление акцией (Веб-рулетка Mini App)</h2>
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
             
             <form action="/send-promo" method="post" class="card p-4 shadow-sm bg-white mb-4">
                 <div class="mb-3">
-                    <label class="form-label text-muted fw-bold">Текст акции для публикации в группе:</label>
-                    <textarea name="text" class="form-control" rows="3" placeholder="Например: 🎁 Розыгрыш! Нажмите кнопку ниже..." required></textarea>
+                    <label class="form-label text-muted fw-bold">Текст акции для группы:</label>
+                    <textarea name="text" class="form-control" rows="3" required>🔥 РОЗІГРУШ ПРИЗІВ! 1 місце — 250 грн, 2 місце — 150 грн, 3 місце — 50 грн. Натискайте кнопку нижче, щоб крутити колесо!</textarea>
                 </div>
-                <button type="submit" class="btn btn-warning btn-lg w-100 fw-bold">🚀 Опубликовать акцию в Telegram</button>
+                <button type="submit" class="btn btn-warning btn-lg w-100 fw-bold">🚀 Опубликовать акцию с Рулеткой</button>
             </form>
 
             <div class="card shadow-sm bg-white p-3">
@@ -479,9 +528,11 @@ async def promo_setup(request: Request):
 @app.post("/send-promo")
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
+    # Кнопка открывает Web App рулетку прямо внутри Telegram во весь экран
+    webapp_url = "https://" + os.environ.get("RENDER_EXTERNAL_URL", "mayer-pro.onrender.com").replace("https://", "") + "/roulette"
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎰 Участвовать в акции", callback_data="join_promo")]
+            [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", web_app=WebAppInfo(url=webapp_url))]
         ]
     )
     await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard, parse_mode="HTML")
@@ -492,7 +543,6 @@ async def send_promo(text: str = Form(...)):
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
     rows_html = ""
-    
     if drops_sheet:
         try:
             drops_rows = drops_sheet.get_all_values()
@@ -505,24 +555,11 @@ async def drops_page(request: Request):
                 
                 projects = row[5:] if len(row) > 5 else []
                 projects = [p for p in projects if p.strip()] 
-                
                 badges = " ".join([f'<span class="badge bg-info text-dark">{p}</span>' for p in projects])
-                if not badges:
-                    badges = '<span class="text-muted small">Нет проектов</span>'
+                if not badges: badges = '<span class="text-muted small">Нет проектов</span>'
                 
-                if u_username:
-                    tg_link = f'<a href="https://t.me/{u_username}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
-                elif u_id:
-                    tg_link = f'<a href="tg://user?id={u_id}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
-                else:
-                    tg_link = '—'
-                
-                if adequacy == "Адекватный":
-                    row_bg = "table-success"
-                elif adequacy == "Неадекватный":
-                    row_bg = "table-danger"
-                else:
-                    row_bg = "table-warning"
+                tg_link = f'<a href="https://t.me/{u_username}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>' if u_username else ('<a href="tg://user?id={u_id}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>' if u_id else '—')
+                row_bg = "table-success" if adequacy == "Адекватный" else ("table-danger" if adequacy == "Неадекватный" else "table-warning")
                 
                 if u_name or u_id:
                     rows_html += f"""
@@ -555,42 +592,26 @@ async def drops_page(request: Request):
     if not rows_html:
         rows_html = '<tr><td colspan="5" class="text-center text-muted p-4">База пока пуста. Люди появятся здесь автоматически!</td></tr>'
 
-    drops_html = f"""
+    return HTMLResponse(f"""
     <!DOCTYPE html>
     <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <title>Список Дропов</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head>
+    <head><meta charset="UTF-8"><title>Список Дропов</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head>
     <body class="bg-light">
         <div class="container mt-4" style="max-width: 1100px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>👥 CRM: База исполнителей</h2>
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
-            
             <div class="card shadow-sm bg-white p-3">
                 <table class="table table-hover align-middle mb-0">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>Имя / Ник</th>
-                            <th>Телефон</th>
-                            <th>Адекватность</th>
-                            <th>Выполненные проекты</th>
-                            <th>Связь</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rows_html}
-                    </tbody>
+                    <thead class="table-dark"><tr><th>Имя / Ник</th><th>Телефон</th><th>Адекватность</th><th>Выполненные проекты</th><th>Связь</th></tr></thead>
+                    <tbody>{rows_html}</tbody>
                 </table>
             </div>
         </div>
     </body>
     </html>
-    """
-    return HTMLResponse(content=drops_html)
+    """)
 
 
 @app.get("/create", response_class=HTMLResponse)
@@ -599,24 +620,18 @@ async def create_page(request: Request):
     if categories_sheet:
         for row in categories_sheet.get_all_records():
             cat_val = row.get('Name') or row.get('Project') or list(row.values())[0]
-            if cat_val:
-                category_options += f'<option value="{cat_val}">{cat_val}</option>'
+            if cat_val: category_options += f'<option value="{cat_val}">{cat_val}</option>'
 
-    create_html = f"""
+    return HTMLResponse(f"""
     <!DOCTYPE html>
     <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <title>Выставить задачу</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    </head>
+    <head><meta charset="UTF-8"><title>Выставить задачу</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head>
     <body class="bg-light">
         <div class="container mt-5" style="max-width: 600px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>✍️ Создать новое задание</h2>
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
-            
             <form action="/create-task" method="post" class="card p-4 shadow-sm bg-white">
                 <div class="mb-3">
                     <label class="form-label text-muted fw-bold">Выберите проект из списка (или введите ниже):</label>
@@ -625,66 +640,31 @@ async def create_page(request: Request):
                         {category_options}
                     </select>
                 </div>
-                <div class="mb-3">
-                    <input type="text" name="category" id="customCategory" class="form-control form-control-lg" placeholder="Например: MEXC, Amazon, Розетка" required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label text-muted fw-bold">Сумма оплаты (грн):</label>
-                    <input type="text" name="payment" class="form-control form-control-lg" placeholder="Например: 500 или 555" required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label text-muted fw-bold">Описание задачи:</label>
-                    <textarea name="description" class="form-control" rows="4" placeholder="Например: Нужно 6 человек, сделать фото и видео верификации" required></textarea>
-                </div>
+                <div class="mb-3"><input type="text" name="category" id="customCategory" class="form-control form-control-lg" placeholder="Например: MEXC, Amazon, Розетка" required></div>
+                <div class="mb-3"><label class="form-label text-muted fw-bold">Сумма оплаты (грн):</label><input type="text" name="payment" class="form-control form-control-lg" placeholder="Например: 500 или 555" required></div>
+                <div class="mb-3"><label class="form-label text-muted fw-bold">Описание задачи:</label><textarea name="description" class="form-control" rows="4" placeholder="Например: Нужно 6 человек..." required></textarea></div>
                 <button type="submit" class="btn btn-primary btn-lg w-100">Опубликовать в Telegram</button>
             </form>
         </div>
     </body>
     </html>
-    """
-    return HTMLResponse(content=create_html)
+    """)
 
 
 @app.post("/create-task")
 async def create_task(category: str = Form(...), payment: str = Form(...), description: str = Form(...)):
     bot = Bot(token=TOKEN)
-    
     all_rows = tasks_sheet.get_all_values()
     task_id = len(all_rows) if len(all_rows) > 0 else 1
-    
     clean_category = category.strip()
-    msg_header = f"🔥 <b>{clean_category}</b>"
-    msg_payment = f"💰💰 <b>Оплата: {payment.strip()} грн</b> 💰💰"
-    
-    message_text = f"{msg_header}\n\n{description.strip()}\n\n{msg_payment}"
-    
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Принять в работу", callback_data=f"take_{task_id}")]
-        ]
-    )
-
-    message = await bot.send_message(
-        chat_id=GROUP_ID,
-        text=message_text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
-    
+    message_text = f"🔥 <b>{clean_category}</b>\n\n{description.strip()}\n\n💰💰 <b>Оплата: {payment.strip()} грн</b> 💰💰"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принять в работу", callback_data=f"take_{task_id}")]])
+    message = await bot.send_message(chat_id=GROUP_ID, text=message_text, reply_markup=keyboard, parse_mode="HTML")
     tasks_sheet.append_row([task_id, clean_category, description.strip(), "new", "", message.message_id, clean_category, payment.strip()])
     await bot.session.close()
-    
-    return HTMLResponse(content="""
-        <div style="text-align:center; margin-top:50px; font-family:sans-serif;">
-            <h3 style="color: #198754;">✅ Задача успешно создана и опубликована в группе!</h3>
-            <br><br>
-            <a href="/" style="padding: 10px 20px; background: #0d6efd; color: white; text-decoration: none; border-radius: 5px;">На главную (Дашборд)</a> 
-            &nbsp;&nbsp;
-            <a href="/create" style="padding: 10px 20px; background: #6c757d; color: white; text-decoration: none; border-radius: 5px;">Создать еще</a>
-        </div>
-    """)
+    return HTMLResponse(content="""<div style="text-align:center; margin-top:50px; font-family:sans-serif;"><h3 style="color: #198754;">✅ Задача успешно создана и опубликована в группе!</h3><br><br><a href="/" style="padding: 10px 20px; background: #0d6efd; color: white; text-decoration: none; border-radius: 5px;">На главную (Дашборд)</a></div>""")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
-
