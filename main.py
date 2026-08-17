@@ -20,7 +20,7 @@ async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
 
-    @dp.callback_query(F.data == "join_promo")
+        @dp.callback_query(F.data == "join_promo")
     async def join_promo(callback: CallbackQuery):
         user_id = str(callback.from_user.id)
         user_name = callback.from_user.first_name
@@ -33,12 +33,16 @@ async def start_telegram_bot():
         rows = promo_sheet.get_all_records()
         existing = next((r for r in rows if str(r.get("Telegram_ID")) == user_id), None)
         
+        # Пытаемся отправить сообщение в ЛС пользователю, чтобы не засорять группу
+        target_chat_id = callback.from_user.id
+        
         if existing:
             ticket = existing.get("Ticket")
-            await callback.answer(f"Ви вже в акції! Ваш номер: {ticket}", show_alert=True)
+            await callback.answer("Подивийтесь особисті повідомлення від бота! 📩", show_alert=True)
             try:
-                await callback.message.answer(f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>", parse_mode="HTML")
-            except:
+                await bot.send_message(chat_id=target_chat_id, text=f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>", parse_mode="HTML")
+            except Exception:
+                # Если личка заблокирована, тихо дублируем в чат всплывающим окном
                 pass
         else:
             ticket = random.randint(1000, 9999)
@@ -52,11 +56,12 @@ async def start_telegram_bot():
                 if not user_in_drops:
                     drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
 
+            await callback.answer("Готово! Перевірте особисті повідомлення 📩", show_alert=True)
             try:
-                await callback.message.answer(f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш номер: <b>{ticket}</b>", parse_mode="HTML")
-            except:
+                await bot.send_message(chat_id=target_chat_id, text=f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>", parse_mode="HTML")
+            except Exception:
                 pass
-            await callback.answer(f"✅ Готово! Ваш номер: {ticket}", show_alert=True)
+
 
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
@@ -480,9 +485,11 @@ async def promo_setup(request: Request):
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
     try:
+        # Ссылка на вашу веб-рулетку на сервере
+        webapp_url = "https://mayer-pro.onrender.com/roulette"
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Участвовать в акции", callback_data="join_promo")]
+                [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", web_app=WebAppInfo(url=webapp_url))]
             ]
         )
         await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard)
@@ -493,6 +500,7 @@ async def send_promo(text: str = Form(...)):
         await bot.session.close()
         
     return RedirectResponse(url="/", status_code=303)
+
 
 
 @app.get("/drops", response_class=HTMLResponse)
