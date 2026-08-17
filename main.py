@@ -37,9 +37,25 @@ async def start_telegram_bot():
         if existing:
             ticket = existing.get("Ticket")
             await callback.answer(f"Ви вже в акції! Ваш номер: {ticket}", show_alert=True)
+            try:
+                await callback.message.answer(f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>", parse_mode="HTML")
+            except:
+                pass
         else:
             ticket = random.randint(1000, 9999)
-            promo_sheet.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id, user_name, username, ticket])
+            now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 1. Записываем в лист Promo
+            promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
+            
+            # 2. Обязательно дублируем/проверяем запись в листе Drops (чтобы человек попадал в базу дропов)
+            if drops_sheet:
+                drops_rows = drops_sheet.get_all_values()
+                user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
+                if not user_in_drops:
+                    # A:Name, B:Phone, C:ID, D:Username, E:Adequacy (по умолчанию "Средний")
+                    drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
+
             try:
                 await callback.message.answer(f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш номер: <b>{ticket}</b>", parse_mode="HTML")
             except:
@@ -90,7 +106,6 @@ async def start_telegram_bot():
                     next_col = max(6, len(row_data) + 1)
                     drops_sheet.update_cell(user_row_idx, next_col, project_name)
             else:
-                # Новая запись: A:Name, B:Phone, C:ID, D:Username, E:Adequacy, F+:Projects
                 drops_sheet.append_row([user_name, "", user_id, user_username, "Средний", project_name])
 
         # --- ОБНОВЛЕНИЕ ЗАДАЧИ ---
@@ -348,7 +363,7 @@ async def dashboard(request: Request):
                 <h2>📊 CRM: Управление задачами</h2>
                 <div>
                     <a href="/drops" class="btn btn-outline-dark me-2">👥 Дропы</a>
-                    <a href="/promo" class="btn btn-warning me-2">🎰 Добавить акцию</a>
+                    <a href="/promo-setup" class="btn btn-warning me-2">🎰 Добавить акцию</a>
                     <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
                 </div>
             </div>
@@ -421,7 +436,24 @@ async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
 # ==================== УПРАВЛЕНИЕ АКЦИЯМИ (ПРОМО) ====================
 @app.get("/promo-setup", response_class=HTMLResponse)
 async def promo_setup(request: Request):
-    return HTMLResponse("""
+    promo_rows = promo_sheet.get_all_values()[1:] if promo_sheet else []
+    
+    rows_html = ""
+    for r in promo_rows:
+        date_reg = r[0] if len(r) > 0 else ""
+        name = r[2] if len(r) > 2 else "Без имени"
+        uname = r[3] if len(r) > 3 else ""
+        ticket = r[4] if len(r) > 4 else ""
+        
+        # Ссылка на чат участника в таблице статистики
+        if uname:
+            chat_link = f'<a href="https://t.me/{uname}" target="_blank">@{uname}</a>'
+        else:
+            chat_link = "—"
+
+        rows_html += f"<tr><td>{date_reg}</td><td><b>{name}</b><br><small>{chat_link}</small></td><td><span class='badge bg-success fs-6'>{ticket}</span></td></tr>"
+
+    return HTMLResponse(f"""
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -430,19 +462,31 @@ async def promo_setup(request: Request):
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-5" style="max-width: 600px;">
+        <div class="container mt-5" style="max-width: 800px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2>🎰 Запуск новой акции</h2>
+                <h2>🎰 Управление акцией и статистика</h2>
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
             
-            <form action="/send-promo" method="post" class="card p-4 shadow-sm bg-white">
+            <form action="/send-promo" method="post" class="card p-4 shadow-sm bg-white mb-4">
                 <div class="mb-3">
-                    <label class="form-label text-muted fw-bold">Текст акции для группы:</label>
-                    <textarea name="text" class="form-control" rows="5" placeholder="Например: 🎁 Новогодний розыгрыш! Нажмите на кнопку ниже, чтобы получить ваш счастливый номер..." required></textarea>
+                    <label class="form-label text-muted fw-bold">Текст акции для публикации в группе:</label>
+                    <textarea name="text" class="form-control" rows="3" placeholder="Например: 🎁 Розыгрыш! Нажмите кнопку ниже..." required></textarea>
                 </div>
                 <button type="submit" class="btn btn-warning btn-lg w-100 fw-bold">🚀 Опубликовать акцию в Telegram</button>
             </form>
+
+            <div class="card shadow-sm bg-white p-3">
+                <h4 class="mb-3">📋 Список участников ({len(promo_rows)})</h4>
+                <table class="table table-hover align-middle">
+                    <thead class="table-dark">
+                        <tr><th>Дата</th><th>Участник</th><th>Счастливый билет</th></tr>
+                    </thead>
+                    <tbody>
+                        {rows_html if rows_html else '<tr><td colspan="3" class="text-center text-muted">Пока никто не зарегистрировался</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
         </div>
     </body>
     </html>
@@ -591,6 +635,7 @@ async def create_page(request: Request):
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
             
+            `
             <form action="/create-task" method="post" class="card p-4 shadow-sm bg-white">
                 <div class="mb-3">
                     <label class="form-label text-muted fw-bold">Выберите проект из списка (или введите ниже):</label>
@@ -607,7 +652,7 @@ async def create_page(request: Request):
                     <input type="text" name="payment" class="form-control form-control-lg" placeholder="Например: 500 или 555" required>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label text-muted fw-bold">Описание задачи:</label>
+                    <label class="form-label text-muted Data">Описание задачи:</label>
                     <textarea name="description" class="form-control" rows="4" placeholder="Например: Нужно 6 человек, сделать фото и видео верификации" required></textarea>
                 </div>
                 <button type="submit" class="btn btn-primary btn-lg w-100">Опубликовать в Telegram</button>
