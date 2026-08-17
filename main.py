@@ -24,7 +24,7 @@ async def start_telegram_bot():
         task_id = int(callback.data.split("_")[1])
         user_name = callback.from_user.first_name
         user_id = str(callback.from_user.id)
-        user_username = callback.from_user.username or "" # Получаем никнейм, если он есть
+        user_username = callback.from_user.username or ""
 
         rows = tasks_sheet.get_all_records()
         target_row_index = None
@@ -42,12 +42,11 @@ async def start_telegram_bot():
 
         project_name = str(task_data.get("Category", "General")).strip()
 
-        # --- ОБНОВЛЕНИЕ БАЗЫ ДРОПОВ (CRM) ---
+        # --- ОБНОВЛЕНИЕ БАЗЫ ДРОПОВ (CRM с учетом вашей структуры: A:Name, B:Phone, C:ID, D:Username, E:Adequacy, F+:Projects) ---
         if drops_sheet:
             drops_rows = drops_sheet.get_all_values()
             user_row_idx = None
             
-            # Ищем пользователя по Telegram_ID (Колонка C = индекс 2)
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == user_id:
                     user_row_idx = idx
@@ -56,20 +55,19 @@ async def start_telegram_bot():
             if user_row_idx:
                 row_data = drops_rows[user_row_idx - 1]
                 
-                # Обновляем Username, если его не было, но он появился
+                # Обновляем Username в колонке D (индекс 3), если он изменился или отсутствовал
                 if user_username and (len(row_data) < 4 or row_data[3] != user_username):
                     drops_sheet.update_cell(user_row_idx, 4, user_username)
                 
-                # Проекты теперь начинаются с колонки E (индекс 4)
-                user_projects = row_data[4:] if len(row_data) > 4 else []
+                # Проекты теперь начинаются с колонки F (индекс 5)
+                user_projects = row_data[5:] if len(row_data) > 5 else []
                 
                 if project_name not in user_projects:
-                    # Ищем первую пустую колонку справа от D (начиная с 5-й)
-                    next_col = max(5, len(row_data) + 1)
+                    next_col = max(6, len(row_data) + 1)
                     drops_sheet.update_cell(user_row_idx, next_col, project_name)
             else:
-                # Новая запись: A:Name, B:Phone, C:ID, D:Username, E:Project
-                drops_sheet.append_row([user_name, "", user_id, user_username, project_name])
+                # Новая запись: A:Name, B:Phone, C:ID, D:Username, E:Adequacy (по умолчанию "Средний"), F:Project
+                drops_sheet.append_row([user_name, "", user_id, user_username, "Средний", project_name])
 
         # --- ОБНОВЛЕНИЕ ЗАДАЧИ ---
         current_assignees = str(task_data.get("Assignee", ""))
@@ -235,7 +233,6 @@ async def dashboard(request: Request):
                     names_html.append(f"👤 {name}")
                     if name in drop_map:
                         u_info = drop_map[name]
-                        # Если есть Username, делаем прямую ссылку https://t.me/
                         if u_info["username"]:
                             chat_link = f'https://t.me/{u_info["username"]}'
                         else:
@@ -378,6 +375,22 @@ async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
     return RedirectResponse(url="/drops", status_code=303)
 
 
+# ==================== ОБНОВЛЕНИЕ АДЕКВАТНОСТИ ====================
+@app.post("/update-adequacy")
+async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
+    if drops_sheet:
+        try:
+            drops_rows = drops_sheet.get_all_values()
+            for idx, row in enumerate(drops_rows, start=1):
+                if len(row) >= 3 and str(row[2]) == tg_id:
+                    # Колонка E — это 5-я колонка
+                    drops_sheet.update_cell(idx, 5, status)
+                    break
+        except Exception:
+            pass
+    return RedirectResponse(url="/drops", status_code=303)
+
+
 # ==================== ВКЛАДКА «ДРОПЫ» (CRM БАЗА) ====================
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
@@ -391,9 +404,10 @@ async def drops_page(request: Request):
                 u_phone = row[1] if len(row) > 1 else ""
                 u_id = row[2] if len(row) > 2 else ""
                 u_username = row[3] if len(row) > 3 else ""
+                adequacy = row[4] if len(row) > 4 else "Средний"
                 
-                # Проекты теперь начинаются с 5-й колонки (индекс 4)
-                projects = row[4:] if len(row) > 4 else []
+                # Проекты теперь начинаются с 6-й колонки (индекс 5)
+                projects = row[5:] if len(row) > 5 else []
                 projects = [p for p in projects if p.strip()] 
                 
                 badges = " ".join([f'<span class="badge bg-info text-dark">{p}</span>' for p in projects])
@@ -408,15 +422,33 @@ async def drops_page(request: Request):
                 else:
                     tg_link = '—'
                 
+                # Авто-окрашивание строки в зависимости от адекватности
+                if adequacy == "Адекватный":
+                    row_bg = "table-success"
+                elif adequacy == "Неадекватный":
+                    row_bg = "table-danger"
+                else:
+                    row_bg = "table-warning" # Средний
+                
                 if u_name or u_id:
                     rows_html += f"""
-                        <tr>
-                            <td><b>{u_name}</b><br><small class="text-muted">ID: {u_id}</small></td>
+                        <tr class="{row_bg}">
+                            <td><b>{u_name}</b><br><small class="text-muted">@{u_username} (ID: {u_id})</small></td>
                             <td>
                                 <form action="/update-phone" method="post" class="d-flex" style="max-width: 220px;">
                                     <input type="hidden" name="tg_id" value="{u_id}">
                                     <input type="text" name="phone" class="form-control form-control-sm me-1" value="{u_phone}" placeholder="+380...">
                                     <button type="submit" class="btn btn-sm btn-outline-secondary" title="Сохранить">💾</button>
+                                </form>
+                            </td>
+                            <td>
+                                <form action="/update-adequacy" method="post">
+                                    <input type="hidden" name="tg_id" value="{u_id}">
+                                    <select name="status" class="form-select form-select-sm" onchange="this.form.submit()" style="width: 140px;">
+                                        <option value="Адекватный" {'selected' if adequacy == 'Адекватный' else ''}>Адекватный</option>
+                                        <option value="Средний" {'selected' if adequacy == 'Средний' else ''}>Средний</option>
+                                        <option value="Неадекватный" {'selected' if adequacy == 'Неадекватный' else ''}>Неадекватный</option>
+                                    </select>
                                 </form>
                             </td>
                             <td>{badges}</td>
@@ -427,7 +459,7 @@ async def drops_page(request: Request):
             pass
 
     if not rows_html:
-        rows_html = '<tr><td colspan="4" class="text-center text-muted p-4">База пока пуста. Люди появятся здесь автоматически!</td></tr>'
+        rows_html = '<tr><td colspan="5" class="text-center text-muted p-4">База пока пуста. Люди появятся здесь автоматически!</td></tr>'
 
     drops_html = f"""
     <!DOCTYPE html>
@@ -438,18 +470,19 @@ async def drops_page(request: Request):
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-4" style="max-width: 950px;">
+        <div class="container mt-4" style="max-width: 1100px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>👥 CRM: База исполнителей</h2>
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
             
-            <div class="card shadow-sm bg-white">
+            <div class="card shadow-sm bg-white p-3">
                 <table class="table table-hover align-middle mb-0">
                     <thead class="table-dark">
                         <tr>
-                            <th>Имя</th>
+                            <th>Имя / Ник</th>
                             <th>Телефон</th>
+                            <th>Адекватность</th>
                             <th>Выполненные проекты</th>
                             <th>Связь</th>
                         </tr>
