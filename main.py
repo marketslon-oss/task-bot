@@ -21,13 +21,14 @@ async def start_telegram_bot():
     dp = Dispatcher()
 
     @dp.callback_query(F.data == "join_promo")
+        @dp.callback_query(F.data == "join_promo")
     async def join_promo(callback: CallbackQuery):
         user_id = str(callback.from_user.id)
         user_name = callback.from_user.first_name
         username = callback.from_user.username or ""
         
         if not promo_sheet:
-            await callback.answer("❌ Ошибка: лист Promo не найден", show_alert=True)
+            await callback.answer("❌ Помилка: лист Promo не знайдено", show_alert=True)
             return
 
         rows = promo_sheet.get_all_records()
@@ -50,13 +51,14 @@ async def start_telegram_bot():
                 drops_rows = drops_sheet.get_all_values()
                 user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
                 if not user_in_drops:
-                    drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
+                    drops_sheet.append_row([user_name, "", user_id, username, "Середній"])
 
             try:
-                await callback.message.answer(f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш номер: <b>{ticket}</b>", parse_mode="HTML")
+                await callback.message.answer(f"🎉 <b>Вітаю, ви взяли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>", parse_mode="HTML")
             except:
                 pass
             await callback.answer(f"✅ Готово! Ваш номер: {ticket}", show_alert=True)
+
             
     @dp.callback_query(F.data == "open_roulette")
     async def open_roulette_handler(callback: CallbackQuery):
@@ -545,10 +547,9 @@ async def send_promo(text: str = Form(...)):
     try:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", callback_data="open_roulette")]
+                [InlineKeyboardButton(text="🎰 Отримати щасливий номер", callback_data="join_promo")]
             ]
         )
-        # Отправляем без parse_mode, чтобы спецсимволы в тексте акции не ломали отправку
         await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard)
         print("✅ Акция успешно отправлена в группу!")
     except Exception as e:
