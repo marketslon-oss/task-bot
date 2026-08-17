@@ -46,25 +46,20 @@ async def start_telegram_bot():
             drops_rows = drops_sheet.get_all_values()
             user_row_idx = None
             
-            # Ищем пользователя по Telegram_ID (Колонка C = индекс 2)
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == user_id:
                     user_row_idx = idx
                     break
 
             if user_row_idx:
-                # Дроп найден. Проверяем его проекты (колонки D и дальше)
                 row_data = drops_rows[user_row_idx - 1]
                 user_projects = row_data[3:] if len(row_data) > 3 else []
                 
                 if project_name not in user_projects:
-                    # Добавляем новый проект в первую пустую колонку справа
                     next_col = len(row_data) + 1
                     drops_sheet.update_cell(user_row_idx, next_col, project_name)
             else:
-                # Добавляем нового дропа: A:Name, B:Phone, C:ID, D:Project
                 drops_sheet.append_row([user_name, "", user_id, project_name])
-
 
         # --- ОБНОВЛЕНИЕ ЗАДАЧИ ---
         current_assignees = str(task_data.get("Assignee", ""))
@@ -101,10 +96,9 @@ async def start_telegram_bot():
     await dp.start_polling(bot)
 
 
-# ==================== ЗАПУСК ПРИЛОЖЕНИЯ (БЕЗ ОШИБОК) ====================
+# ==================== ЗАПУСК ПРИЛОЖЕНИЯ ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Фоновый запуск бота при старте сервера
     asyncio.create_task(start_telegram_bot())
     yield
 
@@ -145,6 +139,20 @@ async def dashboard(request: Request):
     total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
     total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
+    # Создаем словарь для связки Имя -> Telegram_ID из листа Drops
+    drop_map = {}
+    if drops_sheet:
+        try:
+            drops_rows = drops_sheet.get_all_values()
+            for row in drops_rows[1:]:
+                if len(row) >= 3:
+                    name = str(row[0]).strip()
+                    tg_id = str(row[2]).strip()
+                    if name and tg_id:
+                        drop_map[name] = tg_id
+        except Exception:
+            pass
+
     category_names = []
     if categories_sheet:
         cat_records = categories_sheet.get_all_records()
@@ -183,7 +191,6 @@ async def dashboard(request: Request):
             status = str(task.get('Status', '')).strip()
             task_id = task.get('id')
             
-            # Статусы и кнопки
             if status == "new":
                 status_color = "warning"
                 status_text = "Новая"
@@ -208,13 +215,28 @@ async def dashboard(request: Request):
             pay = task.get('Payment', '')
             pay_str = f"<b>{pay} грн</b>" if pay else "—"
             
+            # --- Делаем имена Исполнителей кликабельными ---
+            assignee_raw = str(task.get('Assignee', '')).strip()
+            if assignee_raw:
+                assignee_list = assignee_raw.split(', ')
+                linked_assignees = []
+                for name in assignee_list:
+                    # Если нашли ID в базе Drops — делаем ссылку
+                    if name in drop_map:
+                        linked_assignees.append(f'<a href="tg://user?id={drop_map[name]}" class="text-decoration-none" title="Написать в ТГ">👤 <b>{name}</b></a>')
+                    else:
+                        linked_assignees.append(f"👤 {name}")
+                assignee_display = "<br>".join(linked_assignees)  # Разделяем с новой строки для красоты
+            else:
+                assignee_display = "—"
+            
             res += f"""
                 <tr class="{row_class}">
                     <td>#{task_id}</td>
                     <td><b>{task.get('Title')}</b><br><small class="text-muted">{task.get('Description')}</small></td>
                     <td>{pay_str}</td>
                     <td><span class="badge bg-{status_color}">{status_text}</span></td>
-                    <td>{task.get('Assignee') if task.get('Assignee') else '—'}</td>
+                    <td>{assignee_display}</td>
                     <td>{action_btn}</td>
                 </tr>
             """
@@ -318,7 +340,6 @@ async def close_task(task_id: int):
         if str(row.get("id")) == str(task_id):
             tasks_sheet.update_cell(idx, 4, "done")
             break
-    # Обновляем страницу дашборда
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -330,15 +351,13 @@ async def drops_page(request: Request):
     if drops_sheet:
         try:
             drops_rows = drops_sheet.get_all_values()
-            # Пропускаем первую строку с заголовками (Name, Phone, Telegram_ID...)
             for row in drops_rows[1:]:
                 u_name = row[0] if len(row) > 0 else "Без имени"
                 u_phone = row[1] if len(row) > 1 else "—"
                 u_id = row[2] if len(row) > 2 else ""
                 
-                # Все элементы начиная с 4-й колонки - это проекты (Amazon, OKH и т.д.)
                 projects = row[3:] if len(row) > 3 else []
-                projects = [p for p in projects if p.strip()] # Убираем пустоты
+                projects = [p for p in projects if p.strip()] 
                 
                 badges = " ".join([f'<span class="badge bg-info text-dark">{p}</span>' for p in projects])
                 if not badges:
@@ -475,7 +494,6 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
         parse_mode="HTML"
     )
     
-    # Колонки: 1:id, 2:Title(Category), 3:Desc, 4:Status, 5:Assignee, 6:MsgID, 7:Category, 8:Payment
     tasks_sheet.append_row([task_id, clean_category, description.strip(), "new", "", message.message_id, clean_category, payment.strip()])
     await bot.session.close()
     
