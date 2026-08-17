@@ -3,19 +3,115 @@ import logging
 import os
 import json
 from datetime import datetime
+from contextlib import asynccontextmanager
 import gspread
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-app = FastAPI()
-
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010
 
-# Подключение к Google Таблицам
+# ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
+async def start_telegram_bot():
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher()
+
+    @dp.callback_query(F.data.startswith("take_"))
+    async def handle_take_task(callback: CallbackQuery):
+        task_id = int(callback.data.split("_")[1])
+        user_name = callback.from_user.first_name
+        user_id = str(callback.from_user.id)
+
+        rows = tasks_sheet.get_all_records()
+        target_row_index = None
+        task_data = None
+        
+        for idx, row in enumerate(rows, start=2):
+            if int(row.get("id", 0)) == task_id:
+                target_row_index = idx
+                task_data = row
+                break
+
+        if not task_data:
+            await callback.answer(text="❌ Задача не найдена!", show_alert=True)
+            return
+
+        project_name = str(task_data.get("Category", "General")).strip()
+
+        # --- ОБНОВЛЕНИЕ БАЗЫ ДРОПОВ (CRM) ---
+        if drops_sheet:
+            drops_rows = drops_sheet.get_all_values()
+            user_row_idx = None
+            
+            # Ищем пользователя по Telegram_ID (Колонка C = индекс 2)
+            for idx, row in enumerate(drops_rows, start=1):
+                if len(row) >= 3 and str(row[2]) == user_id:
+                    user_row_idx = idx
+                    break
+
+            if user_row_idx:
+                # Дроп найден. Проверяем его проекты (колонки D и дальше)
+                row_data = drops_rows[user_row_idx - 1]
+                user_projects = row_data[3:] if len(row_data) > 3 else []
+                
+                if project_name not in user_projects:
+                    # Добавляем новый проект в первую пустую колонку справа
+                    next_col = len(row_data) + 1
+                    drops_sheet.update_cell(user_row_idx, next_col, project_name)
+            else:
+                # Добавляем нового дропа: A:Name, B:Phone, C:ID, D:Project
+                drops_sheet.append_row([user_name, "", user_id, project_name])
+
+
+        # --- ОБНОВЛЕНИЕ ЗАДАЧИ ---
+        current_assignees = str(task_data.get("Assignee", ""))
+        if current_assignees:
+            if user_name not in current_assignees.split(", "):
+                new_assignees = current_assignees + f", {user_name}"
+            else:
+                new_assignees = current_assignees
+        else:
+            new_assignees = user_name
+
+        tasks_sheet.update_cell(target_row_index, 4, "in_progress")
+        tasks_sheet.update_cell(target_row_index, 5, new_assignees)
+
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if analytics_sheet:
+            analytics_sheet.append_row([current_time, task_id, user_name, user_id, "accepted_task"])
+
+        await callback.answer(text=f"✅ {user_name}, вы добавлены к исполнению!", show_alert=True)
+        
+        original_text = callback.message.html_text
+        if "\n\n🚀" in original_text:
+            base_text = original_text.split("\n\n🚀")[0]
+        else:
+            base_text = original_text
+            
+        new_text = base_text + f"\n\n🚀 <b>В работе у:</b> {new_assignees}"
+        
+        try:
+            await callback.message.edit_text(text=new_text, reply_markup=callback.message.reply_markup, parse_mode="HTML")
+        except Exception:
+            pass
+
+    await dp.start_polling(bot)
+
+
+# ==================== ЗАПУСК ПРИЛОЖЕНИЯ (БЕЗ ОШИБОК) ====================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Фоновый запуск бота при старте сервера
+    asyncio.create_task(start_telegram_bot())
+    yield
+
+app = FastAPI(lifespan=lifespan)
+
+
+# ==================== ПОДКЛЮЧЕНИЕ К GOOGLE ТАБЛИЦАМ ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
     gc = gspread.service_account_from_dict(creds_dict)
@@ -24,12 +120,21 @@ else:
 
 sh = gc.open("tasks_db")
 tasks_sheet = sh.worksheet("Tasks")
-analytics_sheet = sh.worksheet("Analytics/Logs" if "Analytics/Logs" in [w.title for w in sh.worksheets()] else "Analytics")
+
+try:
+    analytics_sheet = sh.worksheet("Analytics/Logs" if "Analytics/Logs" in [w.title for w in sh.worksheets()] else "Analytics")
+except Exception:
+    analytics_sheet = None
 
 try:
     categories_sheet = sh.worksheet("Categories")
 except Exception:
     categories_sheet = None
+
+try:
+    drops_sheet = sh.worksheet("Drops")
+except Exception:
+    drops_sheet = None
 
 
 # ==================== ГЛАВНЫЙ ЭКРАН — ДАШБОРД ====================
@@ -54,7 +159,7 @@ async def dashboard(request: Request):
             category_names.append(cat)
 
     if not category_names:
-        category_names = ["Amazon", "OKH"]
+        category_names = ["Общие"]
 
     grouped_tasks = {cat: [] for cat in category_names}
     other_tasks = []
@@ -72,20 +177,45 @@ async def dashboard(request: Request):
 
     def render_task_rows(task_list):
         if not task_list:
-            return '<tr><td colspan="5" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
+            return '<tr><td colspan="6" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
         res = ""
         for task in task_list:
             status = str(task.get('Status', '')).strip()
-            status_color = "warning" if status == "new" else "success" if status == "in_progress" else "secondary"
+            task_id = task.get('id')
+            
+            # Статусы и кнопки
+            if status == "new":
+                status_color = "warning"
+                status_text = "Новая"
+                action_btn = ""
+                row_class = ""
+            elif status == "in_progress":
+                status_color = "primary"
+                status_text = "В работе"
+                action_btn = f'<a href="/close-task/{task_id}" class="btn btn-sm btn-outline-success fw-bold">✅ Завершить</a>'
+                row_class = ""
+            elif status == "done":
+                status_color = "secondary"
+                status_text = "Завершена"
+                action_btn = "🔒 Закрыта"
+                row_class = "table-secondary text-muted"
+            else:
+                status_color = "secondary"
+                status_text = status
+                action_btn = ""
+                row_class = ""
+
             pay = task.get('Payment', '')
             pay_str = f"<b>{pay} грн</b>" if pay else "—"
+            
             res += f"""
-                <tr>
-                    <td>#{task.get('id')}</td>
+                <tr class="{row_class}">
+                    <td>#{task_id}</td>
                     <td><b>{task.get('Title')}</b><br><small class="text-muted">{task.get('Description')}</small></td>
                     <td>{pay_str}</td>
-                    <td><span class="badge bg-{status_color}">{status}</span></td>
+                    <td><span class="badge bg-{status_color}">{status_text}</span></td>
                     <td>{task.get('Assignee') if task.get('Assignee') else '—'}</td>
+                    <td>{action_btn}</td>
                 </tr>
             """
         return res
@@ -105,7 +235,7 @@ async def dashboard(request: Request):
                     <div class="card-body">
                         <table class="table table-hover align-middle mb-0">
                             <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th></tr>
+                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th><th>Действие</th></tr>
                             </thead>
                             <tbody>
                                 {render_task_rows(cat_tasks)}
@@ -127,7 +257,7 @@ async def dashboard(request: Request):
                     <div class="card-body">
                         <table class="table table-hover align-middle mb-0">
                             <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th></tr>
+                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th><th>Действие</th></tr>
                             </thead>
                             <tbody>
                                 {render_task_rows(other_tasks)}
@@ -149,7 +279,7 @@ async def dashboard(request: Request):
     <body class="bg-light">
         <div class="container mt-4" style="max-width: 950px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2>📊 Дашборд управления задачами</h2>
+                <h2>📊 CRM: Управление задачами</h2>
                 <div>
                     <a href="/drops" class="btn btn-outline-dark me-2">👥 Дропы</a>
                     <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
@@ -180,32 +310,54 @@ async def dashboard(request: Request):
     """
     return HTMLResponse(content=dashboard_html)
 
+# ==================== МЕХАНИЗМ ЗАКРЫТИЯ ЗАДАЧ ====================
+@app.get("/close-task/{task_id}")
+async def close_task(task_id: int):
+    rows = tasks_sheet.get_all_records()
+    for idx, row in enumerate(rows, start=2):
+        if str(row.get("id")) == str(task_id):
+            tasks_sheet.update_cell(idx, 4, "done")
+            break
+    # Обновляем страницу дашборда
+    return RedirectResponse(url="/", status_code=303)
 
-# ==================== ВКЛАДКА «ДРОПЫ» (БАЗА ЛЮДЕЙ) ====================
+
+# ==================== ВКЛАДКА «ДРОПЫ» (CRM БАЗА) ====================
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
-    # Собираем уникальных пользователей из аналитики
-    logs = analytics_sheet.get_all_records()
-    drops_dict = {}
-    
-    for row in logs:
-        u_name = str(row.get('User_Name', '')).strip()
-        u_id = str(row.get('User_ID', '')).strip()
-        if u_id and u_name:
-            drops_dict[u_id] = u_name
-
     rows_html = ""
-    if not drops_dict:
-        rows_html = '<tr><td colspan="3" class="text-center text-muted">Пока нет активных дропов</td></tr>'
-    else:
-        for u_id, u_name in drops_dict.items():
-            rows_html += f"""
-                <tr>
-                    <td><b>{u_name}</b></td>
-                    <td><code>{u_id}</code></td>
-                    <td><a href="tg://user?id={u_id}" class="btn btn-sm btn-outline-primary">💬 Написать в ТГ</a></td>
-                </tr>
-            """
+    
+    if drops_sheet:
+        try:
+            drops_rows = drops_sheet.get_all_values()
+            # Пропускаем первую строку с заголовками (Name, Phone, Telegram_ID...)
+            for row in drops_rows[1:]:
+                u_name = row[0] if len(row) > 0 else "Без имени"
+                u_phone = row[1] if len(row) > 1 else "—"
+                u_id = row[2] if len(row) > 2 else ""
+                
+                # Все элементы начиная с 4-й колонки - это проекты (Amazon, OKH и т.д.)
+                projects = row[3:] if len(row) > 3 else []
+                projects = [p for p in projects if p.strip()] # Убираем пустоты
+                
+                badges = " ".join([f'<span class="badge bg-info text-dark">{p}</span>' for p in projects])
+                if not badges:
+                    badges = '<span class="text-muted small">Нет проектов</span>'
+                
+                if u_name or u_id:
+                    rows_html += f"""
+                        <tr>
+                            <td><b>{u_name}</b></td>
+                            <td>{u_phone}</td>
+                            <td>{badges}</td>
+                            <td>{f'<a href="tg://user?id={u_id}" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>' if u_id else '—'}</td>
+                        </tr>
+                    """
+        except Exception:
+            pass
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="4" class="text-center text-muted p-4">База пока пуста. Люди появятся здесь автоматически!</td></tr>'
 
     drops_html = f"""
     <!DOCTYPE html>
@@ -216,18 +368,19 @@ async def drops_page(request: Request):
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-4" style="max-width: 800px;">
+        <div class="container mt-4" style="max-width: 900px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2>👥 Список дропов (Исполнителей)</h2>
+                <h2>👥 CRM: База исполнителей</h2>
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
             
-            <div class="card shadow-sm p-3 bg-white">
+            <div class="card shadow-sm bg-white">
                 <table class="table table-hover align-middle mb-0">
                     <thead class="table-dark">
                         <tr>
                             <th>Имя</th>
-                            <th>Telegram ID</th>
+                            <th>Телефон</th>
+                            <th>Выполненные проекты</th>
                             <th>Связь</th>
                         </tr>
                     </thead>
@@ -270,25 +423,24 @@ async def create_page(request: Request):
             
             <form action="/create-task" method="post" class="card p-4 shadow-sm bg-white">
                 <div class="mb-3">
-                    <label class="form-label">Выберите проект из списка (или введите ниже):</label>
+                    <label class="form-label text-muted fw-bold">Выберите проект из списка (или введите ниже):</label>
                     <select name="category_select" class="form-select mb-2" onchange="document.getElementById('customCategory').value=this.value;">
                         <option value="">-- Выберите существующий проект --</option>
                         {category_options}
                     </select>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Название проекта:</label>
-                    <input type="text" name="category" id="customCategory" class="form-control" placeholder="Например: MEXC, Amazon, Розетка" required>
+                    <input type="text" name="category" id="customCategory" class="form-control form-control-lg" placeholder="Например: MEXC, Amazon, Розетка" required>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Сумма оплаты (грн):</label>
-                    <input type="text" name="payment" class="form-control" placeholder="Например: 500 или 555" required>
+                    <label class="form-label text-muted fw-bold">Сумма оплаты (грн):</label>
+                    <input type="text" name="payment" class="form-control form-control-lg" placeholder="Например: 500 или 555" required>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Описание задачи:</label>
+                    <label class="form-label text-muted fw-bold">Описание задачи:</label>
                     <textarea name="description" class="form-control" rows="4" placeholder="Например: Нужно 6 человек, сделать фото и видео верификации" required></textarea>
                 </div>
-                <button type="submit" class="btn btn-primary w-100">Опубликовать в Telegram</button>
+                <button type="submit" class="btn btn-primary btn-lg w-100">Опубликовать в Telegram</button>
             </form>
         </div>
     </body>
@@ -305,10 +457,7 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
     task_id = len(all_rows) if len(all_rows) > 0 else 1
     
     clean_category = category.strip()
-    
-    # Заголовок теперь берется из описания или устанавливается стандартным, без отдельного поля
     msg_header = f"🔥 <b>{clean_category}</b>"
-    # Мешочки с деньгами: 2 спереди и 2 сзади
     msg_payment = f"💰💰 <b>Оплата: {payment.strip()} грн</b> 💰💰"
     
     message_text = f"{msg_header}\n\n{description.strip()}\n\n{msg_payment}"
@@ -326,77 +475,19 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
         parse_mode="HTML"
     )
     
+    # Колонки: 1:id, 2:Title(Category), 3:Desc, 4:Status, 5:Assignee, 6:MsgID, 7:Category, 8:Payment
     tasks_sheet.append_row([task_id, clean_category, description.strip(), "new", "", message.message_id, clean_category, payment.strip()])
     await bot.session.close()
     
     return HTMLResponse(content="""
         <div style="text-align:center; margin-top:50px; font-family:sans-serif;">
-            <h3>✅ Задача успешно создана и опубликована в группе!</h3>
-            <a href="/">На главную (Дашборд)</a> | <a href="/create">Создать еще</a>
+            <h3 style="color: #198754;">✅ Задача успешно создана и опубликована в группе!</h3>
+            <br><br>
+            <a href="/" style="padding: 10px 20px; background: #0d6efd; color: white; text-decoration: none; border-radius: 5px;">На главную (Дашборд)</a> 
+            &nbsp;&nbsp;
+            <a href="/create" style="padding: 10px 20px; background: #6c757d; color: white; text-decoration: none; border-radius: 5px;">Создать еще</a>
         </div>
     """)
-
-
-# ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
-async def start_telegram_bot():
-    bot = Bot(token=TOKEN)
-    dp = Dispatcher()
-
-    @dp.callback_query(F.data.startswith("take_"))
-    async def handle_take_task(callback: CallbackQuery):
-        task_id = int(callback.data.split("_")[1])
-        user_name = callback.from_user.first_name
-        user_id = callback.from_user.id
-
-        rows = tasks_sheet.get_all_records()
-        target_row_index = None
-        task_data = None
-        
-        for idx, row in enumerate(rows, start=2):
-            if int(row.get("id", 0)) == task_id:
-                target_row_index = idx
-                task_data = row
-                break
-
-        if not task_data:
-            await callback.answer(text="❌ Задача не найдена!", show_alert=True)
-            return
-
-        current_assignees = str(task_data.get("Assignee", ""))
-        if current_assignees:
-            if user_name not in current_assignees.split(", "):
-                new_assignees = current_assignees + f", {user_name}"
-            else:
-                new_assignees = current_assignees
-        else:
-            new_assignees = user_name
-
-        tasks_sheet.update_cell(target_row_index, 4, "in_progress")
-        tasks_sheet.update_cell(target_row_index, 5, new_assignees)
-
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        analytics_sheet.append_row([current_time, task_id, user_name, user_id, "accepted_task"])
-
-        await callback.answer(text=f"✅ {user_name}, вы добавлены к исполнению!", show_alert=True)
-        
-        original_text = callback.message.html_text
-        if "\n\n🚀" in original_text:
-            base_text = original_text.split("\n\n🚀")[0]
-        else:
-            base_text = original_text
-            
-        new_text = base_text + f"\n\n🚀 <b>В работе у:</b> {new_assignees}"
-        
-        try:
-            await callback.message.edit_text(text=new_text, reply_markup=callback.message.reply_markup, parse_mode="HTML")
-        except Exception:
-            pass
-
-    await dp.start_polling(bot)
-
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(start_telegram_bot())
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
