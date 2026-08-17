@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import json
+import random
 from datetime import datetime
 from contextlib import asynccontextmanager
 import gspread
@@ -9,7 +10,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010
@@ -18,6 +19,26 @@ GROUP_ID = -1004303893010
 async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
+
+    # Логика акции (/promo)
+    @dp.message(F.text == "/promo")
+    async def cmd_promo(message: Message):
+        user_id = str(message.from_user.id)
+        user_name = message.from_user.first_name
+        username = message.from_user.username or ""
+        
+        if not promo_sheet:
+            await message.answer("❌ Лист 'Promo' не найден в таблице.")
+            return
+
+        rows = promo_sheet.get_all_records()
+        if any(str(r.get("Telegram_ID")) == user_id for r in rows):
+            ticket = next(str(r.get("Ticket")) for r in rows if str(r.get("Telegram_ID")) == user_id)
+            await message.answer(f"❌ {user_name}, вы уже зарегистрированы в акции! Ваш номер участника: <b>{ticket}</b>", parse_mode="HTML")
+        else:
+            ticket = random.randint(1000, 9999)
+            promo_sheet.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id, user_name, username, ticket])
+            await message.answer(f"🎉 <b>Поздравляем!</b> Вы успешно зарегистрировались в акции.\n\nВаш счастливый номер: <b>{ticket}</b>\n\nЖелаем удачи!", parse_mode="HTML")
 
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
@@ -42,7 +63,7 @@ async def start_telegram_bot():
 
         project_name = str(task_data.get("Category", "General")).strip()
 
-        # --- ОБНОВЛЕНИЕ БАЗЫ ДРОПОВ (CRM с учетом вашей структуры: A:Name, B:Phone, C:ID, D:Username, E:Adequacy, F+:Projects) ---
+        # --- ОБНОВЛЕНИЕ БАЗЫ ДРОПОВ (CRM) ---
         if drops_sheet:
             drops_rows = drops_sheet.get_all_values()
             user_row_idx = None
@@ -55,18 +76,15 @@ async def start_telegram_bot():
             if user_row_idx:
                 row_data = drops_rows[user_row_idx - 1]
                 
-                # Обновляем Username в колонке D (индекс 3), если он изменился или отсутствовал
                 if user_username and (len(row_data) < 4 or row_data[3] != user_username):
                     drops_sheet.update_cell(user_row_idx, 4, user_username)
                 
-                # Проекты теперь начинаются с колонки F (индекс 5)
                 user_projects = row_data[5:] if len(row_data) > 5 else []
                 
                 if project_name not in user_projects:
                     next_col = max(6, len(row_data) + 1)
                     drops_sheet.update_cell(user_row_idx, next_col, project_name)
             else:
-                # Новая запись: A:Name, B:Phone, C:ID, D:Username, E:Adequacy (по умолчанию "Средний"), F:Project
                 drops_sheet.append_row([user_name, "", user_id, user_username, "Средний", project_name])
 
         # --- ОБНОВЛЕНИЕ ЗАДАЧИ ---
@@ -138,6 +156,11 @@ try:
 except Exception:
     drops_sheet = None
 
+try:
+    promo_sheet = sh.worksheet("Promo")
+except Exception:
+    promo_sheet = None
+
 
 # ==================== ГЛАВНЫЙ ЭКРАН — ДАШБОРД ====================
 @app.get("/", response_class=HTMLResponse)
@@ -147,7 +170,6 @@ async def dashboard(request: Request):
     total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
     total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
-    # Словарь для поиска ID и Username по имени
     drop_map = {}
     if drops_sheet:
         try:
@@ -224,7 +246,6 @@ async def dashboard(request: Request):
             pay = task.get('Payment', '')
             pay_str = f"<b>{pay} грн</b>" if pay else "—"
             
-            # Логика формирования прямых ссылок
             assignee_raw = str(task.get('Assignee', '')).strip()
             names_html = []
             links_html = []
@@ -321,6 +342,7 @@ async def dashboard(request: Request):
                 <h2>📊 CRM: Управление задачами</h2>
                 <div>
                     <a href="/drops" class="btn btn-outline-dark me-2">👥 Дропы</a>
+                    <a href="/promo-page" class="btn btn-warning me-2">🎰 Добавить акцию</a>
                     <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
                 </div>
             </div>
@@ -383,12 +405,57 @@ async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
             drops_rows = drops_sheet.get_all_values()
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == tg_id:
-                    # Колонка E — это 5-я колонка
                     drops_sheet.update_cell(idx, 5, status)
                     break
         except Exception:
             pass
     return RedirectResponse(url="/drops", status_code=303)
+
+
+# ==================== СТРАНИЦА АКЦИЙ / ПРОМО ====================
+@app.get("/promo-page", response_class=HTMLResponse)
+async def promo_page(request: Request):
+    promo_rows = promo_sheet.get_all_values()[1:] if promo_sheet else []
+    
+    rows_html = ""
+    for r in promo_rows:
+        date_reg = r[0] if len(r) > 0 else ""
+        name = r[2] if len(r) > 2 else "Без имени"
+        uname = r[3] if len(r) > 3 else ""
+        ticket = r[4] if len(r) > 4 else ""
+        rows_html += f"<tr><td>{date_reg}</td><td><b>{name}</b><br><small>@{uname}</small></td><td><span class='badge bg-success fs-6'>{ticket}</span></td></tr>"
+
+    return HTMLResponse(f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>Управление акцией</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body class="bg-light">
+        <div class="container mt-4" style="max-width: 800px;">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2>🎰 Участники розыгрыша (Акция)</h2>
+                <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
+            </div>
+            <div class="alert alert-info">
+                Чтобы участвовать в акции, вашим дропам нужно отправить боту команду: <b>/promo</b>
+            </div>
+            <div class="card shadow-sm bg-white p-3">
+                <table class="table table-hover align-middle">
+                    <thead class="table-dark">
+                        <tr><th>Дата</th><th>Участник</th><th>Счастливый билет</th></tr>
+                    </thead>
+                    <tbody>
+                        {rows_html if rows_html else '<tr><td colspan="3" class="text-center text-muted">Пока нет участников</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    """)
 
 
 # ==================== ВКЛАДКА «ДРОПЫ» (CRM БАЗА) ====================
@@ -406,7 +473,6 @@ async def drops_page(request: Request):
                 u_username = row[3] if len(row) > 3 else ""
                 adequacy = row[4] if len(row) > 4 else "Средний"
                 
-                # Проекты теперь начинаются с 6-й колонки (индекс 5)
                 projects = row[5:] if len(row) > 5 else []
                 projects = [p for p in projects if p.strip()] 
                 
@@ -414,7 +480,6 @@ async def drops_page(request: Request):
                 if not badges:
                     badges = '<span class="text-muted small">Нет проектов</span>'
                 
-                # Прямая ссылка на ТГ
                 if u_username:
                     tg_link = f'<a href="https://t.me/{u_username}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
                 elif u_id:
@@ -422,13 +487,12 @@ async def drops_page(request: Request):
                 else:
                     tg_link = '—'
                 
-                # Авто-окрашивание строки в зависимости от адекватности
                 if adequacy == "Адекватный":
                     row_bg = "table-success"
                 elif adequacy == "Неадекватный":
                     row_bg = "table-danger"
                 else:
-                    row_bg = "table-warning" # Средний
+                    row_bg = "table-warning"
                 
                 if u_name or u_id:
                     rows_html += f"""
