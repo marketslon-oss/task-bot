@@ -556,8 +556,9 @@ async def send_promo(text: str = Form(...)):
         print(f"❌ ОШИБКА ОТПРАВКИ В ТЕЛЕГРАМ: {e}")
     finally:
         await bot.session.close()
-        
+
     return RedirectResponse(url="/", status_code=303)
+
 
 
 
