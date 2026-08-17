@@ -348,7 +348,7 @@ async def dashboard(request: Request):
                 <h2>📊 CRM: Управление задачами</h2>
                 <div>
                     <a href="/drops" class="btn btn-outline-dark me-2">👥 Дропы</a>
-                    <a href="/promo-setup" class="btn btn-warning me-2">🎰 Добавить акцию</a>
+                    <a href="/promo" class="btn btn-warning me-2">🎰 Добавить акцию</a>
                     <a href="/create" class="btn btn-primary">➕ Выставить задачу</a>
                 </div>
             </div>
