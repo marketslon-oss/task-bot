@@ -528,16 +528,21 @@ async def promo_setup(request: Request):
 @app.post("/send-promo")
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
-    # Кнопка открывает Web App рулетку прямо внутри Telegram во весь экран
-    webapp_url = "https://" + os.environ.get("RENDER_EXTERNAL_URL", "mayer-pro.onrender.com").replace("https://", "") + "/roulette"
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", web_app=WebAppInfo(url=webapp_url))]
-        ]
-    )
-    await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard, parse_mode="HTML")
-    await bot.session.close()
+    try:
+        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", web_app=WebAppInfo(url=webapp_url))]
+            ]
+        )
+        await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        print(f"Error sending promo: {e}")
+    finally:
+        await bot.session.close()
+        
     return RedirectResponse(url="/", status_code=303)
+
 
 
 @app.get("/drops", response_class=HTMLResponse)
