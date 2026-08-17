@@ -20,7 +20,6 @@ async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
 
-    # Логика участия в акции через кнопку
     @dp.callback_query(F.data == "join_promo")
     async def join_promo(callback: CallbackQuery):
         user_id = str(callback.from_user.id)
@@ -45,15 +44,12 @@ async def start_telegram_bot():
             ticket = random.randint(1000, 9999)
             now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            # 1. Записываем в лист Promo
             promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
             
-            # 2. Обязательно дублируем/проверяем запись в листе Drops (чтобы человек попадал в базу дропов)
             if drops_sheet:
                 drops_rows = drops_sheet.get_all_values()
                 user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
                 if not user_in_drops:
-                    # A:Name, B:Phone, C:ID, D:Username, E:Adequacy (по умолчанию "Средний")
                     drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
 
             try:
@@ -62,7 +58,6 @@ async def start_telegram_bot():
                 pass
             await callback.answer(f"✅ Готово! Ваш номер: {ticket}", show_alert=True)
 
-    # Логика принятия задач
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
         task_id = int(callback.data.split("_")[1])
@@ -86,7 +81,6 @@ async def start_telegram_bot():
 
         project_name = str(task_data.get("Category", "General")).strip()
 
-        # --- ОБНОВЛЕНИЕ БАЗЫ ДРОПОВ (CRM) ---
         if drops_sheet:
             drops_rows = drops_sheet.get_all_values()
             user_row_idx = None
@@ -108,7 +102,6 @@ async def start_telegram_bot():
             else:
                 drops_sheet.append_row([user_name, "", user_id, user_username, "Средний", project_name])
 
-        # --- ОБНОВЛЕНИЕ ЗАДАЧИ ---
         current_assignees = str(task_data.get("Assignee", ""))
         if current_assignees:
             if user_name not in current_assignees.split(", "):
@@ -143,7 +136,6 @@ async def start_telegram_bot():
     await dp.start_polling(bot)
 
 
-# ==================== ЗАПУСК ПРИЛОЖЕНИЯ ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(start_telegram_bot())
@@ -151,8 +143,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-
-# ==================== ПОДКЛЮЧЕНИЕ К GOOGLE ТАБЛИЦАМ ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
     creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
     gc = gspread.service_account_from_dict(creds_dict)
@@ -183,7 +173,6 @@ except Exception:
     promo_sheet = None
 
 
-# ==================== ГЛАВНЫЙ ЭКРАН — ДАШБОРД ====================
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     tasks = tasks_sheet.get_all_records()
@@ -391,9 +380,7 @@ async def dashboard(request: Request):
     </html>
     """
     return HTMLResponse(content=dashboard_html)
-
-# ==================== МЕХАНИЗМ ЗАКРЫТИЯ ЗАДАЧ ====================
-@app.get("/close-task/{task_id}")
+    @app.get("/close-task/{task_id}")
 async def close_task(task_id: int):
     rows = tasks_sheet.get_all_records()
     for idx, row in enumerate(rows, start=2):
@@ -403,7 +390,6 @@ async def close_task(task_id: int):
     return RedirectResponse(url="/", status_code=303)
 
 
-# ==================== ОБНОВЛЕНИЕ ТЕЛЕФОНА ====================
 @app.post("/update-phone")
 async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
     if drops_sheet:
@@ -418,7 +404,6 @@ async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
     return RedirectResponse(url="/drops", status_code=303)
 
 
-# ==================== ОБНОВЛЕНИЕ АДЕКВАТНОСТИ ====================
 @app.post("/update-adequacy")
 async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
     if drops_sheet:
@@ -433,7 +418,6 @@ async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
     return RedirectResponse(url="/drops", status_code=303)
 
 
-# ==================== УПРАВЛЕНИЕ АКЦИЯМИ (ПРОМО) ====================
 @app.get("/promo-setup", response_class=HTMLResponse)
 async def promo_setup(request: Request):
     promo_rows = promo_sheet.get_all_values()[1:] if promo_sheet else []
@@ -445,7 +429,6 @@ async def promo_setup(request: Request):
         uname = r[3] if len(r) > 3 else ""
         ticket = r[4] if len(r) > 4 else ""
         
-        # Ссылка на чат участника в таблице статистики
         if uname:
             chat_link = f'<a href="https://t.me/{uname}" target="_blank">@{uname}</a>'
         else:
@@ -492,6 +475,7 @@ async def promo_setup(request: Request):
     </html>
     """)
 
+
 @app.post("/send-promo")
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
@@ -505,7 +489,6 @@ async def send_promo(text: str = Form(...)):
     return RedirectResponse(url="/", status_code=303)
 
 
-# ==================== ВКЛАДКА «ДРОПЫ» (CRM БАЗА) ====================
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
     rows_html = ""
@@ -610,7 +593,6 @@ async def drops_page(request: Request):
     return HTMLResponse(content=drops_html)
 
 
-# ==================== СТРАНИЦА СОЗДАНИЯ ЗАДАЧИ ====================
 @app.get("/create", response_class=HTMLResponse)
 async def create_page(request: Request):
     category_options = ""
@@ -635,7 +617,6 @@ async def create_page(request: Request):
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
             </div>
             
-            `
             <form action="/create-task" method="post" class="card p-4 shadow-sm bg-white">
                 <div class="mb-3">
                     <label class="form-label text-muted fw-bold">Выберите проект из списка (или введите ниже):</label>
@@ -652,7 +633,7 @@ async def create_page(request: Request):
                     <input type="text" name="payment" class="form-control form-control-lg" placeholder="Например: 500 или 555" required>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label text-muted Data">Описание задачи:</label>
+                    <label class="form-label text-muted fw-bold">Описание задачи:</label>
                     <textarea name="description" class="form-control" rows="4" placeholder="Например: Нужно 6 человек, сделать фото и видео верификации" required></textarea>
                 </div>
                 <button type="submit" class="btn btn-primary btn-lg w-100">Опубликовать в Telegram</button>
@@ -706,3 +687,4 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+
