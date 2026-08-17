@@ -57,6 +57,20 @@ async def start_telegram_bot():
             except:
                 pass
             await callback.answer(f"✅ Готово! Ваш номер: {ticket}", show_alert=True)
+            
+    @dp.callback_query(F.data == "open_roulette")
+    async def open_roulette_handler(callback: CallbackQuery):
+        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎁 Натисніть, щоб крутити колесо!", web_app=WebAppInfo(url=webapp_url))]
+            ]
+        )
+        await callback.message.answer(
+            "Вітаємо! Натисніть кнопку нижче, щоб відкрити Колесо Фортуни та виграти призи:", 
+            reply_markup=keyboard
+        )
+        await callback.answer()
 
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
@@ -529,21 +543,20 @@ async def promo_setup(request: Request):
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
     try:
-        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        # Используем стандартный callback, который гарантированно доставится в группу
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", web_app=WebAppInfo(url=webapp_url))]
+                [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", callback_data="open_roulette")]
             ]
         )
         await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard, parse_mode="HTML")
+        print("✅ Акция успешно отправлена в группу!")
     except Exception as e:
-        print(f"Error sending promo: {e}")
+        print(f"❌ ОШИБКА ОТПРАВКИ В ТЕЛЕГРАМ: {e}")
     finally:
         await bot.session.close()
         
     return RedirectResponse(url="/", status_code=303)
-
-
 
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
