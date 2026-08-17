@@ -24,6 +24,7 @@ async def start_telegram_bot():
         task_id = int(callback.data.split("_")[1])
         user_name = callback.from_user.first_name
         user_id = str(callback.from_user.id)
+        user_username = callback.from_user.username or "" # Получаем никнейм, если он есть
 
         rows = tasks_sheet.get_all_records()
         target_row_index = None
@@ -54,13 +55,21 @@ async def start_telegram_bot():
 
             if user_row_idx:
                 row_data = drops_rows[user_row_idx - 1]
-                user_projects = row_data[3:] if len(row_data) > 3 else []
+                
+                # Обновляем Username, если его не было, но он появился
+                if user_username and (len(row_data) < 4 or row_data[3] != user_username):
+                    drops_sheet.update_cell(user_row_idx, 4, user_username)
+                
+                # Проекты теперь начинаются с колонки E (индекс 4)
+                user_projects = row_data[4:] if len(row_data) > 4 else []
                 
                 if project_name not in user_projects:
-                    next_col = len(row_data) + 1
+                    # Ищем первую пустую колонку справа от D (начиная с 5-й)
+                    next_col = max(5, len(row_data) + 1)
                     drops_sheet.update_cell(user_row_idx, next_col, project_name)
             else:
-                drops_sheet.append_row([user_name, "", user_id, project_name])
+                # Новая запись: A:Name, B:Phone, C:ID, D:Username, E:Project
+                drops_sheet.append_row([user_name, "", user_id, user_username, project_name])
 
         # --- ОБНОВЛЕНИЕ ЗАДАЧИ ---
         current_assignees = str(task_data.get("Assignee", ""))
@@ -140,7 +149,7 @@ async def dashboard(request: Request):
     total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
     total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
-    # Словарь для поиска Telegram ID по имени (чтобы делать прямые ссылки)
+    # Словарь для поиска ID и Username по имени
     drop_map = {}
     if drops_sheet:
         try:
@@ -149,8 +158,9 @@ async def dashboard(request: Request):
                 if len(row) >= 3:
                     name = str(row[0]).strip()
                     tg_id = str(row[2]).strip()
+                    username = str(row[3]).strip() if len(row) > 3 else ""
                     if name and tg_id:
-                        drop_map[name] = tg_id
+                        drop_map[name] = {"id": tg_id, "username": username}
         except Exception:
             pass
 
@@ -216,7 +226,7 @@ async def dashboard(request: Request):
             pay = task.get('Payment', '')
             pay_str = f"<b>{pay} грн</b>" if pay else "—"
             
-            # Разбираем исполнителей и добавляем кнопку связи
+            # Логика формирования прямых ссылок
             assignee_raw = str(task.get('Assignee', '')).strip()
             names_html = []
             links_html = []
@@ -224,7 +234,13 @@ async def dashboard(request: Request):
                 for name in assignee_raw.split(', '):
                     names_html.append(f"👤 {name}")
                     if name in drop_map:
-                        links_html.append(f'<a href="tg://user?id={drop_map[name]}" class="btn btn-sm btn-success py-0 px-2" title="Написать">💬 ТГ</a>')
+                        u_info = drop_map[name]
+                        # Если есть Username, делаем прямую ссылку https://t.me/
+                        if u_info["username"]:
+                            chat_link = f'https://t.me/{u_info["username"]}'
+                        else:
+                            chat_link = f'tg://user?id={u_info["id"]}'
+                        links_html.append(f'<a href="{chat_link}" target="_blank" class="btn btn-sm btn-success py-0 px-2" title="Написать">💬 ТГ</a>')
                     else:
                         links_html.append('<span class="text-muted small">—</span>')
                 assignee_display = "<br>".join(names_html)
@@ -303,7 +319,7 @@ async def dashboard(request: Request):
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-4" style="max-width: 1000px;">
+        <div class="container mt-4" style="max-width: 950px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>📊 CRM: Управление задачами</h2>
                 <div>
@@ -355,12 +371,10 @@ async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
             drops_rows = drops_sheet.get_all_values()
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == tg_id:
-                    # Обновляем колонку B (индекс 2 в gspread = Телефон)
                     drops_sheet.update_cell(idx, 2, phone)
                     break
         except Exception:
             pass
-    # Возвращаемся обратно на страницу дропов
     return RedirectResponse(url="/drops", status_code=303)
 
 
@@ -376,20 +390,29 @@ async def drops_page(request: Request):
                 u_name = row[0] if len(row) > 0 else "Без имени"
                 u_phone = row[1] if len(row) > 1 else ""
                 u_id = row[2] if len(row) > 2 else ""
+                u_username = row[3] if len(row) > 3 else ""
                 
-                projects = row[3:] if len(row) > 3 else []
+                # Проекты теперь начинаются с 5-й колонки (индекс 4)
+                projects = row[4:] if len(row) > 4 else []
                 projects = [p for p in projects if p.strip()] 
                 
                 badges = " ".join([f'<span class="badge bg-info text-dark">{p}</span>' for p in projects])
                 if not badges:
                     badges = '<span class="text-muted small">Нет проектов</span>'
                 
+                # Прямая ссылка на ТГ
+                if u_username:
+                    tg_link = f'<a href="https://t.me/{u_username}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
+                elif u_id:
+                    tg_link = f'<a href="tg://user?id={u_id}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
+                else:
+                    tg_link = '—'
+                
                 if u_name or u_id:
                     rows_html += f"""
                         <tr>
                             <td><b>{u_name}</b><br><small class="text-muted">ID: {u_id}</small></td>
                             <td>
-                                <!-- Форма сохранения телефона -->
                                 <form action="/update-phone" method="post" class="d-flex" style="max-width: 220px;">
                                     <input type="hidden" name="tg_id" value="{u_id}">
                                     <input type="text" name="phone" class="form-control form-control-sm me-1" value="{u_phone}" placeholder="+380...">
@@ -397,7 +420,7 @@ async def drops_page(request: Request):
                                 </form>
                             </td>
                             <td>{badges}</td>
-                            <td>{f'<a href="tg://user?id={u_id}" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>' if u_id else '—'}</td>
+                            <td>{tg_link}</td>
                         </tr>
                     """
         except Exception:
