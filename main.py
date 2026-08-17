@@ -543,13 +543,13 @@ async def promo_setup(request: Request):
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
     try:
-        # Используем стандартный callback, который гарантированно доставится в группу
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", callback_data="open_roulette")]
             ]
         )
-        await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard, parse_mode="HTML")
+        # Отправляем без parse_mode, чтобы спецсимволы в тексте акции не ломали отправку
+        await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard)
         print("✅ Акция успешно отправлена в группу!")
     except Exception as e:
         print(f"❌ ОШИБКА ОТПРАВКИ В ТЕЛЕГРАМ: {e}")
@@ -557,6 +557,7 @@ async def send_promo(text: str = Form(...)):
         await bot.session.close()
         
     return RedirectResponse(url="/", status_code=303)
+
 
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
