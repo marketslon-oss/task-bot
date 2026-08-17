@@ -547,7 +547,7 @@ async def send_promo(text: str = Form(...)):
     try:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Отримати щасливий номер", callback_data="join_promo")]
+                [InlineKeyboardButton(text="🎰 Участвовать в акции", callback_data="join_promo")]
             ]
         )
         await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard)
@@ -558,6 +558,7 @@ async def send_promo(text: str = Form(...)):
         await bot.session.close()
         
     return RedirectResponse(url="/", status_code=303)
+
 
 
 @app.get("/drops", response_class=HTMLResponse)
