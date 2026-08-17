@@ -46,6 +46,7 @@ async def start_telegram_bot():
             drops_rows = drops_sheet.get_all_values()
             user_row_idx = None
             
+            # Ищем пользователя по Telegram_ID (Колонка C = индекс 2)
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == user_id:
                     user_row_idx = idx
@@ -139,7 +140,7 @@ async def dashboard(request: Request):
     total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
     total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
-    # Создаем словарь для связки Имя -> Telegram_ID из листа Drops
+    # Словарь для поиска Telegram ID по имени (чтобы делать прямые ссылки)
     drop_map = {}
     if drops_sheet:
         try:
@@ -185,7 +186,7 @@ async def dashboard(request: Request):
 
     def render_task_rows(task_list):
         if not task_list:
-            return '<tr><td colspan="6" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
+            return '<tr><td colspan="7" class="text-muted text-center">Нет задач в этом блоке</td></tr>'
         res = ""
         for task in task_list:
             status = str(task.get('Status', '')).strip()
@@ -215,20 +216,22 @@ async def dashboard(request: Request):
             pay = task.get('Payment', '')
             pay_str = f"<b>{pay} грн</b>" if pay else "—"
             
-            # --- Делаем имена Исполнителей кликабельными ---
+            # Разбираем исполнителей и добавляем кнопку связи
             assignee_raw = str(task.get('Assignee', '')).strip()
+            names_html = []
+            links_html = []
             if assignee_raw:
-                assignee_list = assignee_raw.split(', ')
-                linked_assignees = []
-                for name in assignee_list:
-                    # Если нашли ID в базе Drops — делаем ссылку
+                for name in assignee_raw.split(', '):
+                    names_html.append(f"👤 {name}")
                     if name in drop_map:
-                        linked_assignees.append(f'<a href="tg://user?id={drop_map[name]}" class="text-decoration-none" title="Написать в ТГ">👤 <b>{name}</b></a>')
+                        links_html.append(f'<a href="tg://user?id={drop_map[name]}" class="btn btn-sm btn-success py-0 px-2" title="Написать">💬 ТГ</a>')
                     else:
-                        linked_assignees.append(f"👤 {name}")
-                assignee_display = "<br>".join(linked_assignees)  # Разделяем с новой строки для красоты
+                        links_html.append('<span class="text-muted small">—</span>')
+                assignee_display = "<br>".join(names_html)
+                links_display = "<br>".join(links_html)
             else:
                 assignee_display = "—"
+                links_display = "—"
             
             res += f"""
                 <tr class="{row_class}">
@@ -237,6 +240,7 @@ async def dashboard(request: Request):
                     <td>{pay_str}</td>
                     <td><span class="badge bg-{status_color}">{status_text}</span></td>
                     <td>{assignee_display}</td>
+                    <td>{links_display}</td>
                     <td>{action_btn}</td>
                 </tr>
             """
@@ -254,10 +258,10 @@ async def dashboard(request: Request):
                     <span>▼ Развернуть</span>
                 </div>
                 <div id="{collapse_id}" class="collapse {show_class}">
-                    <div class="card-body">
+                    <div class="card-body p-0">
                         <table class="table table-hover align-middle mb-0">
-                            <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th><th>Действие</th></tr>
+                            <thead class="table-light">
+                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th><th>Связь</th><th>Действие</th></tr>
                             </thead>
                             <tbody>
                                 {render_task_rows(cat_tasks)}
@@ -276,10 +280,10 @@ async def dashboard(request: Request):
                     <span>▼ Развернуть</span>
                 </div>
                 <div id="collapse_other" class="collapse">
-                    <div class="card-body">
+                    <div class="card-body p-0">
                         <table class="table table-hover align-middle mb-0">
-                            <thead>
-                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th><th>Действие</th></tr>
+                            <thead class="table-light">
+                                <tr><th>ID</th><th>Задача</th><th>Оплата</th><th>Статус</th><th>Исполнитель</th><th>Связь</th><th>Действие</th></tr>
                             </thead>
                             <tbody>
                                 {render_task_rows(other_tasks)}
@@ -299,7 +303,7 @@ async def dashboard(request: Request):
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-4" style="max-width: 950px;">
+        <div class="container mt-4" style="max-width: 1000px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>📊 CRM: Управление задачами</h2>
                 <div>
@@ -343,6 +347,23 @@ async def close_task(task_id: int):
     return RedirectResponse(url="/", status_code=303)
 
 
+# ==================== ОБНОВЛЕНИЕ ТЕЛЕФОНА ====================
+@app.post("/update-phone")
+async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
+    if drops_sheet:
+        try:
+            drops_rows = drops_sheet.get_all_values()
+            for idx, row in enumerate(drops_rows, start=1):
+                if len(row) >= 3 and str(row[2]) == tg_id:
+                    # Обновляем колонку B (индекс 2 в gspread = Телефон)
+                    drops_sheet.update_cell(idx, 2, phone)
+                    break
+        except Exception:
+            pass
+    # Возвращаемся обратно на страницу дропов
+    return RedirectResponse(url="/drops", status_code=303)
+
+
 # ==================== ВКЛАДКА «ДРОПЫ» (CRM БАЗА) ====================
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
@@ -353,7 +374,7 @@ async def drops_page(request: Request):
             drops_rows = drops_sheet.get_all_values()
             for row in drops_rows[1:]:
                 u_name = row[0] if len(row) > 0 else "Без имени"
-                u_phone = row[1] if len(row) > 1 else "—"
+                u_phone = row[1] if len(row) > 1 else ""
                 u_id = row[2] if len(row) > 2 else ""
                 
                 projects = row[3:] if len(row) > 3 else []
@@ -366,8 +387,15 @@ async def drops_page(request: Request):
                 if u_name or u_id:
                     rows_html += f"""
                         <tr>
-                            <td><b>{u_name}</b></td>
-                            <td>{u_phone}</td>
+                            <td><b>{u_name}</b><br><small class="text-muted">ID: {u_id}</small></td>
+                            <td>
+                                <!-- Форма сохранения телефона -->
+                                <form action="/update-phone" method="post" class="d-flex" style="max-width: 220px;">
+                                    <input type="hidden" name="tg_id" value="{u_id}">
+                                    <input type="text" name="phone" class="form-control form-control-sm me-1" value="{u_phone}" placeholder="+380...">
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary" title="Сохранить">💾</button>
+                                </form>
+                            </td>
                             <td>{badges}</td>
                             <td>{f'<a href="tg://user?id={u_id}" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>' if u_id else '—'}</td>
                         </tr>
@@ -387,7 +415,7 @@ async def drops_page(request: Request):
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     </head>
     <body class="bg-light">
-        <div class="container mt-4" style="max-width: 900px;">
+        <div class="container mt-4" style="max-width: 950px;">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h2>👥 CRM: База исполнителей</h2>
                 <a href="/" class="btn btn-secondary">← Назад на Дашборд</a>
