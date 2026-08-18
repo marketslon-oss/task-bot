@@ -22,10 +22,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== КОНФИГУРАЦИЯ ====================
-TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"   # убедитесь, что это токен @my_test_verif_bot
+# ==================== КОНФИГУРАЦИЯ (исправлено!) ====================
+TOKEN = "СЮДА_ВСТАВЬТЕ_ТОКЕН_ОТ_@my_test_verify_bot"   # ⬅️ ЗАМЕНИТЕ!
 GROUP_ID = -1004303893010
-BOT_USERNAME = "my_test_verif_bot"   # исправлено!
+BOT_USERNAME = "my_test_verify_bot"   # ⬅️ ИСПРАВЛЕНО!
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
@@ -74,7 +74,6 @@ def register_user(user_id: str, user_name: str, username: str):
     now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
 
-    # Запись в Drops, если ещё нет
     if drops_sheet is not None:
         drops_rows = drops_sheet.get_all_values()
         user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
@@ -88,7 +87,6 @@ async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
 
-    # Обработчик команды /start с deep link (например, /start promo)
     @dp.message(Command("start"))
     async def start_command(message: Message):
         args = message.text.split()
@@ -103,14 +101,14 @@ async def start_telegram_bot():
             await message.answer("❌ Вибачте, акція тимчасово недоступна.")
             return
 
-        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        # Ссылка на WebApp (используем наш собственный эндпоинт /roulette)
+        webapp_url = "https://ВАШ_ДОМЕН_НА_RENDER.com/roulette"   # ⬅️ ЗАМЕНИТЕ НА СВОЙ АДРЕС!
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
             ]
         )
 
-        # Если пользователь только что зарегистрировался (deep link == "promo")
         if deep_link == "promo":
             await message.answer(
                 f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>\n\nНатисніть кнопку нижче, щоб покрутити колесо:",
@@ -118,14 +116,12 @@ async def start_telegram_bot():
                 parse_mode="HTML"
             )
         else:
-            # Если просто зашли в бота без параметра — показываем статус
             await message.answer(
                 f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>\n\nМожете відкрити рулетку знову:",
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
 
-    # Старый callback (оставляем на случай, если кто-то нажмёт старую кнопку)
     @dp.callback_query(F.data == "join_promo")
     async def join_promo(callback: CallbackQuery):
         user_id = str(callback.from_user.id)
@@ -137,7 +133,7 @@ async def start_telegram_bot():
             await callback.answer("❌ Помилка акції", show_alert=True)
             return
 
-        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        webapp_url = "https://ВАШ_ДОМЕН_НА_RENDER.com/roulette"
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
@@ -155,7 +151,6 @@ async def start_telegram_bot():
         except Exception as e:
             logger.error(f"Не вдалося надіслати повідомлення: {e}")
 
-    # Обработчик принятия задачи (без изменений)
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
         task_id = int(callback.data.split("_")[1])
@@ -242,6 +237,123 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan)
+
+# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) ----------
+@app.get("/roulette", response_class=HTMLResponse)
+async def roulette_page():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>🎰 Колесо фортуни</title>
+        <style>
+            body {
+                text-align: center;
+                font-family: 'Segoe UI', sans-serif;
+                background: linear-gradient(135deg, #1a1a2e, #16213e);
+                color: white;
+                margin: 0;
+                padding: 50px 20px;
+                min-height: 100vh;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+            }
+            h1 {
+                font-size: 3em;
+                margin-bottom: 20px;
+                text-shadow: 0 0 20px #ff6b6b;
+            }
+            .number {
+                font-size: 120px;
+                font-weight: 900;
+                background: rgba(255, 107, 107, 0.2);
+                padding: 20px 60px;
+                border-radius: 50px;
+                display: inline-block;
+                margin: 30px 0;
+                min-width: 200px;
+                border: 3px solid #ff6b6b;
+                box-shadow: 0 0 40px rgba(255, 107, 107, 0.3);
+                transition: all 0.3s;
+            }
+            .number.spinning {
+                animation: pulse 0.5s infinite alternate;
+            }
+            @keyframes pulse {
+                0% { transform: scale(1); }
+                100% { transform: scale(1.05); }
+            }
+            button {
+                padding: 18px 50px;
+                font-size: 28px;
+                font-weight: bold;
+                border: none;
+                border-radius: 50px;
+                background: #ff6b6b;
+                color: white;
+                cursor: pointer;
+                transition: all 0.2s;
+                box-shadow: 0 8px 25px rgba(255, 107, 107, 0.4);
+            }
+            button:hover {
+                background: #ee5a5a;
+                transform: scale(1.05);
+                box-shadow: 0 12px 35px rgba(255, 107, 107, 0.6);
+            }
+            button:active {
+                transform: scale(0.95);
+            }
+            .hint {
+                margin-top: 30px;
+                font-size: 1.2em;
+                opacity: 0.7;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>🎰 Колесо фортуни</h1>
+        <div id="result" class="number">❓</div>
+        <button onclick="spin()">Крутити!</button>
+        <div class="hint">Натисніть, щоб дізнатися свій виграшний номер</div>
+
+        <script>
+            let isSpinning = false;
+
+            function spin() {
+                if (isSpinning) return;
+                isSpinning = true;
+                const resultDiv = document.getElementById('result');
+                resultDiv.classList.add('spinning');
+                resultDiv.textContent = '...';
+
+                let count = 0;
+                const interval = setInterval(() => {
+                    const randomNum = Math.floor(Math.random() * 100) + 1;
+                    resultDiv.textContent = randomNum;
+                    count++;
+                    if (count > 15) {
+                        clearInterval(interval);
+                        const finalNum = Math.floor(Math.random() * 100) + 1;
+                        resultDiv.textContent = finalNum;
+                        resultDiv.classList.remove('spinning');
+                        isSpinning = false;
+                        // Ви можете надіслати результат у бота, якщо потрібно
+                        // Telegram.WebApp.sendData(JSON.stringify({ number: finalNum }));
+                    }
+                }, 100);
+            }
+        </script>
+    </body>
+    </html>
+    """
+
+# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
+# ... (они такие же, как в предыдущем коде, я не буду дублировать, чтобы не перегружать ответ,
+# но вы можете взять их из моего предыдущего сообщения, они не меняются)
+# Я добавлю их ниже для полноты.
 
 # ---------- ДАШБОРД ----------
 @app.get("/", response_class=HTMLResponse)
@@ -573,7 +685,6 @@ async def promo_setup(request: Request):
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
     try:
-        # Только одна кнопка – ссылка на бота с параметром start=promo
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
