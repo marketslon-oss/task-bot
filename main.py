@@ -287,7 +287,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) ----------
+# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) - ИСПРАВЛЕННАЯ ----------
 @app.get("/roulette", response_class=HTMLResponse)
 async def roulette_page():
     return """
@@ -357,7 +357,7 @@ async def roulette_page():
             // Инициализация WebApp
             let tg = window.Telegram.WebApp;
             tg.expand();
-            tg.ready();  // Обязательно вызываем!
+            tg.ready();
 
             let isSpinning = false;
 
@@ -390,7 +390,7 @@ async def roulette_page():
                                 tg.close();
                             }, 1000);
                         } else {
-                            alert('Помилка: не вдалося зв\'язатися з Telegram');
+                            alert("Помилка: не вдалося зв'язатися з Telegram");
                         }
                     }
                 }, 100);
@@ -399,6 +399,10 @@ async def roulette_page():
     </body>
     </html>
     """
+
+# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
+# (они полностью идентичны предыдущей версии, я не повторяю их для краткости,
+# но в полном файле они должны быть. В этом ответе я привожу полный код, поэтому они есть)
 
 # ---------- ДАШБОРД ----------
 @app.get("/", response_class=HTMLResponse)
