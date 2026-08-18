@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
-GROUP_ID = -1004303893010   # ⚠️ Замените на точный ID группы, если нужно
+GROUP_ID = -1004303893010   # ⚠️ Убедитесь, что это правильный ID группы
 BOT_USERNAME = "my_test_verif_bot"
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
@@ -49,6 +49,9 @@ categories_sheet = get_sheet("Categories")
 drops_sheet = get_sheet("Drops")
 promo_sheet = get_sheet("Promo")
 
+if promo_sheet is None:
+    logger.error("❌ Лист Promo не найден! Создайте лист с именем 'Promo' с колонками: Дата, Telegram_ID, Имя, Username, Ticket")
+
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def get_next_task_id():
     if tasks_sheet is None:
@@ -60,26 +63,41 @@ def get_next_task_id():
     return max(ids) + 1 if ids else 1
 
 def register_user_with_number(user_id: str, user_name: str, username: str, number: int):
-    """Регистрирует пользователя с полученным номером (из колеса)"""
+    """
+    Регистрирует пользователя, если его ещё нет.
+    Возвращает (ticket, is_new) – is_new = True если только что зарегистрирован.
+    """
     if promo_sheet is None:
-        return None
+        logger.error("❌ Нет доступа к листу Promo")
+        return None, False
 
-    rows = promo_sheet.get_all_records()
-    existing = next((r for r in rows if str(r.get("Telegram_ID")) == user_id), None)
-    if existing:
-        return existing.get("Ticket")
+    try:
+        # Проверяем, есть ли уже пользователь
+        records = promo_sheet.get_all_records()
+        existing = next((r for r in records if str(r.get("Telegram_ID")) == user_id), None)
+        if existing:
+            ticket = existing.get("Ticket")
+            logger.info(f"👤 Пользователь {user_id} уже зарегистрирован, ticket {ticket}")
+            return ticket, False
 
-    ticket = random.randint(1000, 9999)
-    now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
+        # Новый пользователь – генерируем билет
+        ticket = random.randint(1000, 9999)
+        now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
+        logger.info(f"✅ Новый пользователь {user_name} ({user_id}) зарегистрирован с ticket {ticket}")
 
-    if drops_sheet is not None:
-        drops_rows = drops_sheet.get_all_values()
-        user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
-        if not user_in_drops:
-            drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
+        # Запись в Drops, если есть
+        if drops_sheet is not None:
+            drops_rows = drops_sheet.get_all_values()
+            user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
+            if not user_in_drops:
+                drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
+                logger.info(f"➕ Добавлен в Drops: {user_name}")
 
-    return ticket
+        return ticket, True
+    except Exception as e:
+        logger.error(f"❌ Ошибка в register_user_with_number: {e}")
+        return None, False
 
 # ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
@@ -107,6 +125,7 @@ async def start_telegram_bot():
 
     @dp.message(F.web_app_data)
     async def handle_web_app_data(message: Message):
+        logger.info(f"📩 Получены данные из WebApp: {message.web_app_data.data}")
         try:
             data = json.loads(message.web_app_data.data)
             number = data.get('number')
@@ -118,19 +137,30 @@ async def start_telegram_bot():
             user_name = message.from_user.first_name
             username = message.from_user.username or ""
 
-            ticket = register_user_with_number(user_id, user_name, username, number)
+            ticket, is_new = register_user_with_number(user_id, user_name, username, number)
+
             if ticket is None:
-                await message.answer("❌ Ви вже зареєстровані! Ваш номер: ...")
+                await message.answer("❌ Сталася помилка реєстрації. Спробуйте пізніше.")
                 return
 
-            await message.answer(
-                f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
-                f"Ваш щасливий номер: <b>{ticket}</b>\n"
-                f"Випало на колесі: <b>{number}</b>",
-                parse_mode="HTML"
-            )
+            if is_new:
+                # Новый участник
+                await message.answer(
+                    f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
+                    f"Ваш щасливий номер: <b>{ticket}</b>\n"
+                    f"Випало на колесі: <b>{number}</b>",
+                    parse_mode="HTML"
+                )
+            else:
+                # Уже участвует
+                await message.answer(
+                    f"❌ Ви вже зареєстровані в акції!\n"
+                    f"Ваш номер: <b>{ticket}</b>\n"
+                    f"Останнє випало на колесі: <b>{number}</b>",
+                    parse_mode="HTML"
+                )
         except Exception as e:
-            logger.error(f"Помилка обробки WebAppData: {e}")
+            logger.error(f"❌ Ошибка обработки web_app_data: {e}")
             await message.answer("❌ Сталася помилка. Спробуйте ще раз.")
 
     @dp.callback_query(F.data == "join_promo")
@@ -235,7 +265,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) - четырёхзначное число ----------
+# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) ----------
 @app.get("/roulette", response_class=HTMLResponse)
 async def roulette_page():
     return """
@@ -328,7 +358,6 @@ async def roulette_page():
 
                 let count = 0;
                 const interval = setInterval(() => {
-                    // Генерируем четырёхзначное число от 1000 до 9999
                     const randomNum = Math.floor(Math.random() * 9000) + 1000;
                     resultDiv.textContent = randomNum;
                     count++;
@@ -353,15 +382,7 @@ async def roulette_page():
     </html>
     """
 
-# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
-# Здесь весь остальной код из предыдущей версии – он полностью идентичен.
-# Чтобы не загромождать ответ, я продолжу, но для краткости он будет вставлен как есть.
-
-# ... (код от /dashboard до /create-task включительно должен быть скопирован из предыдущего ответа,
-# потому что он не меняется. В данном ответе я приведу его полностью, чтобы код был готов к копированию)
-
-# ------------------------------------------------------------
-# ДАШБОРД
+# ---------- ДАШБОРД ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     if tasks_sheet is None:
@@ -579,6 +600,7 @@ async def dashboard(request: Request):
     """
     return HTMLResponse(content=dashboard_html)
 
+# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ ----------
 @app.get("/close-task/{task_id}")
 async def close_task(task_id: int):
     if tasks_sheet is None:
