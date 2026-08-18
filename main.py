@@ -3,54 +3,107 @@ import logging
 import os
 import json
 import random
+import html  # для экранирования вывода в HTML
 from datetime import datetime
 from contextlib import asynccontextmanager
+
 import gspread
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo
 
+# ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# ==================== КОНФИГУРАЦИЯ (пока хардкод) ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010
+
+# ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
+if "GOOGLE_CREDENTIALS" in os.environ:
+    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+    gc = gspread.service_account_from_dict(creds_dict)
+else:
+    gc = gspread.service_account(filename="driver-bot-personal-d10024426fab.json")
+
+sh = gc.open("tasks_db")
+
+# Получаем все листы с обработкой ошибок
+def get_sheet(name):
+    try:
+        return sh.worksheet(name)
+    except Exception as e:
+        logger.warning(f"Лист '{name}' не найден: {e}")
+        return None
+
+tasks_sheet = get_sheet("Tasks")
+analytics_sheet = get_sheet("Analytics/Logs") or get_sheet("Analytics")
+categories_sheet = get_sheet("Categories")
+drops_sheet = get_sheet("Drops")
+promo_sheet = get_sheet("Promo")
+
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+def get_next_task_id():
+    """Возвращает следующий ID задачи (макс + 1)"""
+    if tasks_sheet is None:
+        return 1
+    records = tasks_sheet.get_all_records()
+    if not records:
+        return 1
+    ids = [r.get("id", 0) for r in records if isinstance(r.get("id"), (int, float))]
+    return max(ids) + 1 if ids else 1
 
 # ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
 
-        @dp.callback_query(F.data == "join_promo")
+    @dp.callback_query(F.data == "join_promo")
     async def join_promo(callback: CallbackQuery):
         user_id = str(callback.from_user.id)
         user_name = callback.from_user.first_name
         username = callback.from_user.username or ""
+        target_chat_id = callback.from_user.id
         
-        if not promo_sheet:
+        if promo_sheet is None:
             await callback.answer("❌ Ошибка: лист Promo не найден", show_alert=True)
             return
 
         rows = promo_sheet.get_all_records()
         existing = next((r for r in rows if str(r.get("Telegram_ID")) == user_id), None)
         
-        # Пытаемся отправить сообщение в ЛС пользователю, чтобы не засорять группу
-        target_chat_id = callback.from_user.id
-        
+        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        pm_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
+            ]
+        )
+
         if existing:
             ticket = existing.get("Ticket")
-            await callback.answer("Подивийтесь особисті повідомлення від бота! 📩", show_alert=True)
+            await callback.answer("Перевірте особисті повідомлення від бота! 📩", show_alert=True)
             try:
-                await bot.send_message(chat_id=target_chat_id, text=f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>", parse_mode="HTML")
-            except Exception:
-                # Если личка заблокирована, тихо дублируем в чат всплывающим окном
-                pass
+                await bot.send_message(
+                    chat_id=target_chat_id,
+                    text=f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>\n\nМожете відкрити рулетку знову:",
+                    reply_markup=pm_keyboard,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error(f"Не вдалося надіслати повідомлення користувачу {user_id}: {e}")
         else:
             ticket = random.randint(1000, 9999)
             now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
             
-            if drops_sheet:
+            if drops_sheet is not None:
                 drops_rows = drops_sheet.get_all_values()
                 user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
                 if not user_in_drops:
@@ -58,10 +111,14 @@ async def start_telegram_bot():
 
             await callback.answer("Готово! Перевірте особисті повідомлення 📩", show_alert=True)
             try:
-                await bot.send_message(chat_id=target_chat_id, text=f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>", parse_mode="HTML")
-            except Exception:
-                pass
-
+                await bot.send_message(
+                    chat_id=target_chat_id,
+                    text=f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>\n\nНатисніть кнопку нижче, щоб покрутити колесо:",
+                    reply_markup=pm_keyboard,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error(f"Не вдалося надіслати повідомлення користувачу {user_id}: {e}")
 
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
@@ -69,6 +126,10 @@ async def start_telegram_bot():
         user_name = callback.from_user.first_name
         user_id = str(callback.from_user.id)
         user_username = callback.from_user.username or ""
+
+        if tasks_sheet is None:
+            await callback.answer("❌ Лист задач не знайдено!", show_alert=True)
+            return
 
         rows = tasks_sheet.get_all_records()
         target_row_index = None
@@ -80,16 +141,16 @@ async def start_telegram_bot():
                 task_data = row
                 break
 
-        if not task_data:
+        if task_data is None:
             await callback.answer(text="❌ Задача не найдена!", show_alert=True)
             return
 
         project_name = str(task_data.get("Category", "General")).strip()
 
-        if drops_sheet:
+        # Обновляем Drops
+        if drops_sheet is not None:
             drops_rows = drops_sheet.get_all_values()
             user_row_idx = None
-            
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == user_id:
                     user_row_idx = idx
@@ -107,6 +168,7 @@ async def start_telegram_bot():
             else:
                 drops_sheet.append_row([user_name, "", user_id, user_username, "Средний", project_name])
 
+        # Обновляем Assignee
         current_assignees = str(task_data.get("Assignee", ""))
         if current_assignees:
             if user_name not in current_assignees.split(", "):
@@ -120,7 +182,7 @@ async def start_telegram_bot():
         tasks_sheet.update_cell(target_row_index, 5, new_assignees)
 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if analytics_sheet:
+        if analytics_sheet is not None:
             analytics_sheet.append_row([current_time, task_id, user_name, user_id, "accepted_task"])
 
         await callback.answer(text=f"✅ {user_name}, вы добавлены к исполнению!", show_alert=True)
@@ -135,12 +197,12 @@ async def start_telegram_bot():
         
         try:
             await callback.message.edit_text(text=new_text, reply_markup=callback.message.reply_markup, parse_mode="HTML")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Не удалось обновить сообщение: {e}")
 
     await dp.start_polling(bot)
 
-
+# ==================== FASTAPI ВЕБ-СЕРВЕР ====================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(start_telegram_bot())
@@ -148,45 +210,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-if "GOOGLE_CREDENTIALS" in os.environ:
-    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-    gc = gspread.service_account_from_dict(creds_dict)
-else:
-    gc = gspread.service_account(filename="driver-bot-personal-d10024426fab.json")
-
-sh = gc.open("tasks_db")
-tasks_sheet = sh.worksheet("Tasks")
-
-try:
-    analytics_sheet = sh.worksheet("Analytics/Logs" if "Analytics/Logs" in [w.title for w in sh.worksheets()] else "Analytics")
-except Exception:
-    analytics_sheet = None
-
-try:
-    categories_sheet = sh.worksheet("Categories")
-except Exception:
-    categories_sheet = None
-
-try:
-    drops_sheet = sh.worksheet("Drops")
-except Exception:
-    drops_sheet = None
-
-try:
-    promo_sheet = sh.worksheet("Promo")
-except Exception:
-    promo_sheet = None
-
-
+# ---------- ДАШБОРД ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
+    if tasks_sheet is None:
+        return HTMLResponse("<h1>Ошибка: лист Tasks не найден</h1>", status_code=500)
+
     tasks = tasks_sheet.get_all_records()
     
     total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
     total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
     drop_map = {}
-    if drops_sheet:
+    if drops_sheet is not None:
         try:
             drops_rows = drops_sheet.get_all_values()
             for row in drops_rows[1:]:
@@ -196,16 +232,19 @@ async def dashboard(request: Request):
                     username = str(row[3]).strip() if len(row) > 3 else ""
                     if name and tg_id:
                         drop_map[name] = {"id": tg_id, "username": username}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Ошибка чтения Drops: {e}")
 
     category_names = []
-    if categories_sheet:
-        cat_records = categories_sheet.get_all_records()
-        for row in cat_records:
-            cat_val = row.get('Name') or row.get('Project') or list(row.values())[0]
-            if cat_val:
-                category_names.append(str(cat_val).strip())
+    if categories_sheet is not None:
+        try:
+            cat_records = categories_sheet.get_all_records()
+            for row in cat_records:
+                cat_val = row.get('Name') or row.get('Project') or list(row.values())[0]
+                if cat_val:
+                    category_names.append(str(cat_val).strip())
+        except Exception as e:
+            logger.error(f"Ошибка чтения Categories: {e}")
     
     for task in tasks:
         cat = str(task.get('Category', '')).strip()
@@ -259,20 +298,21 @@ async def dashboard(request: Request):
                 row_class = ""
 
             pay = task.get('Payment', '')
-            pay_str = f"<b>{pay} грн</b>" if pay else "—"
+            pay_str = f"<b>{html.escape(str(pay))} грн</b>" if pay else "—"
             
             assignee_raw = str(task.get('Assignee', '')).strip()
             names_html = []
             links_html = []
             if assignee_raw:
                 for name in assignee_raw.split(', '):
-                    names_html.append(f"👤 {name}")
+                    safe_name = html.escape(name)
+                    names_html.append(f"👤 {safe_name}")
                     if name in drop_map:
                         u_info = drop_map[name]
                         if u_info["username"]:
-                            chat_link = f'https://t.me/{u_info["username"]}'
+                            chat_link = f'https://t.me/{html.escape(u_info["username"])}'
                         else:
-                            chat_link = f'tg://user?id={u_info["id"]}'
+                            chat_link = f'tg://user?id={html.escape(u_info["id"])}'
                         links_html.append(f'<a href="{chat_link}" target="_blank" class="btn btn-sm btn-success py-0 px-2" title="Написать">💬 ТГ</a>')
                     else:
                         links_html.append('<span class="text-muted small">—</span>')
@@ -282,10 +322,14 @@ async def dashboard(request: Request):
                 assignee_display = "—"
                 links_display = "—"
             
+            # Экранируем заголовок и описание
+            title_safe = html.escape(str(task.get('Title', '')))
+            desc_safe = html.escape(str(task.get('Description', '')))
+            
             res += f"""
                 <tr class="{row_class}">
                     <td>#{task_id}</td>
-                    <td><b>{task.get('Title')}</b><br><small class="text-muted">{task.get('Description')}</small></td>
+                    <td><b>{title_safe}</b><br><small class="text-muted">{desc_safe}</small></td>
                     <td>{pay_str}</td>
                     <td><span class="badge bg-{status_color}">{status_text}</span></td>
                     <td>{assignee_display}</td>
@@ -303,7 +347,7 @@ async def dashboard(request: Request):
         accordions_html += f"""
             <div class="card shadow-sm mb-3">
                 <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#{collapse_id}">
-                    <h5 class="mb-0">📁 {cat} ({len(cat_tasks)})</h5>
+                    <h5 class="mb-0">📁 {html.escape(cat)} ({len(cat_tasks)})</h5>
                     <span>▼ Развернуть</span>
                 </div>
                 <div id="{collapse_id}" class="collapse {show_class}">
@@ -385,8 +429,12 @@ async def dashboard(request: Request):
     </html>
     """
     return HTMLResponse(content=dashboard_html)
+
+# ---------- ЗАКРЫТЬ ЗАДАЧУ ----------
 @app.get("/close-task/{task_id}")
 async def close_task(task_id: int):
+    if tasks_sheet is None:
+        return RedirectResponse(url="/", status_code=303)
     rows = tasks_sheet.get_all_records()
     for idx, row in enumerate(rows, start=2):
         if str(row.get("id")) == str(task_id):
@@ -394,52 +442,62 @@ async def close_task(task_id: int):
             break
     return RedirectResponse(url="/", status_code=303)
 
-
+# ---------- ОБНОВЛЕНИЕ ТЕЛЕФОНА В DROPS ----------
 @app.post("/update-phone")
 async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
-    if drops_sheet:
+    if drops_sheet is not None:
         try:
             drops_rows = drops_sheet.get_all_values()
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == tg_id:
                     drops_sheet.update_cell(idx, 2, phone)
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Ошибка обновления телефона: {e}")
     return RedirectResponse(url="/drops", status_code=303)
 
-
+# ---------- ОБНОВЛЕНИЕ АДЕКВАТНОСТИ В DROPS ----------
 @app.post("/update-adequacy")
 async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
-    if drops_sheet:
+    if drops_sheet is not None:
         try:
             drops_rows = drops_sheet.get_all_values()
             for idx, row in enumerate(drops_rows, start=1):
                 if len(row) >= 3 and str(row[2]) == tg_id:
                     drops_sheet.update_cell(idx, 5, status)
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Ошибка обновления адекватности: {e}")
     return RedirectResponse(url="/drops", status_code=303)
 
-
+# ---------- СТРАНИЦА УПРАВЛЕНИЯ АКЦИЕЙ ----------
 @app.get("/promo-setup", response_class=HTMLResponse)
 async def promo_setup(request: Request):
-    promo_rows = promo_sheet.get_all_values()[1:] if promo_sheet else []
-    
+    if promo_sheet is None:
+        return HTMLResponse("<h1>Ошибка: лист Promo не найден</h1>", status_code=500)
+
+    promo_rows = promo_sheet.get_all_values()
+    # Если есть заголовки, пропускаем их, иначе берём все строки
+    if promo_rows and promo_rows[0] and any(col.strip() for col in promo_rows[0]):
+        promo_rows = promo_rows[1:]
+    else:
+        promo_rows = []
+
     rows_html = ""
     for r in promo_rows:
+        if len(r) < 3:
+            continue
         date_reg = r[0] if len(r) > 0 else ""
         name = r[2] if len(r) > 2 else "Без имени"
         uname = r[3] if len(r) > 3 else ""
         ticket = r[4] if len(r) > 4 else ""
         
         if uname:
-            chat_link = f'<a href="https://t.me/{uname}" target="_blank">@{uname}</a>'
+            chat_link = f'<a href="https://t.me/{html.escape(uname)}" target="_blank">@{html.escape(uname)}</a>'
         else:
             chat_link = "—"
 
-        rows_html += f"<tr><td>{date_reg}</td><td><b>{name}</b><br><small>{chat_link}</small></td><td><span class='badge bg-success fs-6'>{ticket}</span></td></tr>"
+        rows_html += f"<tr><td>{html.escape(date_reg)}</td><td><b>{html.escape(name)}</b><br><small>{chat_link}</small></td><td><span class='badge bg-success fs-6'>{html.escape(ticket)}</span></td></tr>"
 
     return HTMLResponse(f"""
     <!DOCTYPE html>
@@ -480,37 +538,37 @@ async def promo_setup(request: Request):
     </html>
     """)
 
-
+# ---------- ОТПРАВКА АКЦИИ В ГРУППУ ----------
 @app.post("/send-promo")
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
     try:
-        # Ссылка на вашу веб-рулетку на сервере
-        webapp_url = "https://mayer-pro.onrender.com/roulette"
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Крутить колесо фортуны", web_app=WebAppInfo(url=webapp_url))]
+                [InlineKeyboardButton(text="🎰 Отримати квиток", callback_data="join_promo")],
+                [InlineKeyboardButton(text="📩 Запустити бота (якщо не працює)", url="https://t.me/my_test_task_bot?start=promo")]
             ]
         )
         await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard)
-        print("✅ Акция успешно отправлена в группу!")
+        logger.info("✅ Акция успешно отправлена в группу!")
     except Exception as e:
-        print(f"❌ ОШИБКА ОТПРАВКИ В ТЕЛЕГРАМ: {e}")
+        logger.error(f"❌ ОШИБКА ОТПРАВКИ В ТЕЛЕГРАМ: {e}")
     finally:
         await bot.session.close()
         
     return RedirectResponse(url="/", status_code=303)
 
-
-
+# ---------- СТРАНИЦА ДРОПОВ ----------
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
     rows_html = ""
     
-    if drops_sheet:
+    if drops_sheet is not None:
         try:
             drops_rows = drops_sheet.get_all_values()
             for row in drops_rows[1:]:
+                if len(row) < 3:
+                    continue
                 u_name = row[0] if len(row) > 0 else "Без имени"
                 u_phone = row[1] if len(row) > 1 else ""
                 u_id = row[2] if len(row) > 2 else ""
@@ -520,14 +578,14 @@ async def drops_page(request: Request):
                 projects = row[5:] if len(row) > 5 else []
                 projects = [p for p in projects if p.strip()] 
                 
-                badges = " ".join([f'<span class="badge bg-info text-dark">{p}</span>' for p in projects])
+                badges = " ".join([f'<span class="badge bg-info text-dark">{html.escape(p)}</span>' for p in projects])
                 if not badges:
                     badges = '<span class="text-muted small">Нет проектов</span>'
                 
                 if u_username:
-                    tg_link = f'<a href="https://t.me/{u_username}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
+                    tg_link = f'<a href="https://t.me/{html.escape(u_username)}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
                 elif u_id:
-                    tg_link = f'<a href="tg://user?id={u_id}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
+                    tg_link = f'<a href="tg://user?id={html.escape(u_id)}" target="_blank" class="btn btn-sm btn-success fw-bold">💬 Написать в ТГ</a>'
                 else:
                     tg_link = '—'
                 
@@ -538,33 +596,32 @@ async def drops_page(request: Request):
                 else:
                     row_bg = "table-warning"
                 
-                if u_name or u_id:
-                    rows_html += f"""
-                        <tr class="{row_bg}">
-                            <td><b>{u_name}</b><br><small class="text-muted">@{u_username} (ID: {u_id})</small></td>
-                            <td>
-                                <form action="/update-phone" method="post" class="d-flex" style="max-width: 220px;">
-                                    <input type="hidden" name="tg_id" value="{u_id}">
-                                    <input type="text" name="phone" class="form-control form-control-sm me-1" value="{u_phone}" placeholder="+380...">
-                                    <button type="submit" class="btn btn-sm btn-outline-secondary" title="Сохранить">💾</button>
-                                </form>
-                            </td>
-                            <td>
-                                <form action="/update-adequacy" method="post">
-                                    <input type="hidden" name="tg_id" value="{u_id}">
-                                    <select name="status" class="form-select form-select-sm" onchange="this.form.submit()" style="width: 140px;">
-                                        <option value="Адекватный" {'selected' if adequacy == 'Адекватный' else ''}>Адекватный</option>
-                                        <option value="Средний" {'selected' if adequacy == 'Средний' else ''}>Средний</option>
-                                        <option value="Неадекватный" {'selected' if adequacy == 'Неадекватный' else ''}>Неадекватный</option>
-                                    </select>
-                                </form>
-                            </td>
-                            <td>{badges}</td>
-                            <td>{tg_link}</td>
-                        </tr>
-                    """
-        except Exception:
-            pass
+                rows_html += f"""
+                    <tr class="{row_bg}">
+                        <td><b>{html.escape(u_name)}</b><br><small class="text-muted">@{html.escape(u_username)} (ID: {html.escape(u_id)})</small></td>
+                        <td>
+                            <form action="/update-phone" method="post" class="d-flex" style="max-width: 220px;">
+                                <input type="hidden" name="tg_id" value="{html.escape(u_id)}">
+                                <input type="text" name="phone" class="form-control form-control-sm me-1" value="{html.escape(u_phone)}" placeholder="+380...">
+                                <button type="submit" class="btn btn-sm btn-outline-secondary" title="Сохранить">💾</button>
+                            </form>
+                        </td>
+                        <td>
+                            <form action="/update-adequacy" method="post">
+                                <input type="hidden" name="tg_id" value="{html.escape(u_id)}">
+                                <select name="status" class="form-select form-select-sm" onchange="this.form.submit()" style="width: 140px;">
+                                    <option value="Адекватный" {'selected' if adequacy == 'Адекватный' else ''}>Адекватный</option>
+                                    <option value="Средний" {'selected' if adequacy == 'Средний' else ''}>Средний</option>
+                                    <option value="Неадекватный" {'selected' if adequacy == 'Неадекватный' else ''}>Неадекватный</option>
+                                </select>
+                            </form>
+                        </td>
+                        <td>{badges}</td>
+                        <td>{tg_link}</td>
+                    </tr>
+                """
+        except Exception as e:
+            logger.error(f"Ошибка при построении страницы Drops: {e}")
 
     if not rows_html:
         rows_html = '<tr><td colspan="5" class="text-center text-muted p-4">База пока пуста. Люди появятся здесь автоматически!</td></tr>'
@@ -606,15 +663,18 @@ async def drops_page(request: Request):
     """
     return HTMLResponse(content=drops_html)
 
-
+# ---------- СТРАНИЦА СОЗДАНИЯ ЗАДАЧИ ----------
 @app.get("/create", response_class=HTMLResponse)
 async def create_page(request: Request):
     category_options = ""
-    if categories_sheet:
-        for row in categories_sheet.get_all_records():
-            cat_val = row.get('Name') or row.get('Project') or list(row.values())[0]
-            if cat_val:
-                category_options += f'<option value="{cat_val}">{cat_val}</option>'
+    if categories_sheet is not None:
+        try:
+            for row in categories_sheet.get_all_records():
+                cat_val = row.get('Name') or row.get('Project') or list(row.values())[0]
+                if cat_val:
+                    category_options += f'<option value="{html.escape(str(cat_val))}">{html.escape(str(cat_val))}</option>'
+        except Exception as e:
+            logger.error(f"Ошибка чтения Categories: {e}")
 
     create_html = f"""
     <!DOCTYPE html>
@@ -658,13 +718,15 @@ async def create_page(request: Request):
     """
     return HTMLResponse(content=create_html)
 
-
+# ---------- СОЗДАНИЕ ЗАДАЧИ (POST) ----------
 @app.post("/create-task")
 async def create_task(category: str = Form(...), payment: str = Form(...), description: str = Form(...)):
+    if tasks_sheet is None:
+        return HTMLResponse("<h1>Ошибка: лист Tasks не найден</h1>", status_code=500)
+
     bot = Bot(token=TOKEN)
     
-    all_rows = tasks_sheet.get_all_values()
-    task_id = len(all_rows) if len(all_rows) > 0 else 1
+    task_id = get_next_task_id()
     
     clean_category = category.strip()
     msg_header = f"🔥 <b>{clean_category}</b>"
@@ -678,15 +740,29 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
         ]
     )
 
-    message = await bot.send_message(
-        chat_id=GROUP_ID,
-        text=message_text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
-    
-    tasks_sheet.append_row([task_id, clean_category, description.strip(), "new", "", message.message_id, clean_category, payment.strip()])
-    await bot.session.close()
+    try:
+        message = await bot.send_message(
+            chat_id=GROUP_ID,
+            text=message_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        # Исправлено: убрано дублирование category, теперь 7 полей
+        tasks_sheet.append_row([
+            task_id,
+            clean_category,
+            description.strip(),
+            "new",
+            "",  # Assignee
+            message.message_id,
+            payment.strip()
+        ])
+        logger.info(f"Задача #{task_id} создана и опубликована")
+    except Exception as e:
+        logger.error(f"Ошибка при создании задачи: {e}")
+        return HTMLResponse(f"<h1>Ошибка: {html.escape(str(e))}</h1>", status_code=500)
+    finally:
+        await bot.session.close()
     
     return HTMLResponse(content="""
         <div style="text-align:center; margin-top:50px; font-family:sans-serif;">
@@ -698,6 +774,7 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
         </div>
     """)
 
+# ==================== ЗАПУСК ====================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port)
