@@ -12,7 +12,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo
 from aiogram.filters import Command
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
-GROUP_ID = -1004303893010   # ID группы
+GROUP_ID = -1004303893010   # ID группы – убедитесь, что он правильный
 BOT_USERNAME = "my_test_verif_bot"   # Имя бота (без @)
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
@@ -125,19 +125,15 @@ async def start_telegram_bot():
 
         if deep_link == "promo":
             webapp_url = "https://mayer-pro.onrender.com/roulette"
-            
-            # Используем нижнюю клавиатуру, так как только она работает с sendData()
-            keyboard = ReplyKeyboardMarkup(
-                keyboard=[
-                    [KeyboardButton(text="🎰 Відкрити рулетку", web_app=WebAppInfo(url=webapp_url))]
-                ],
-                resize_keyboard=True,
-                one_time_keyboard=True
+            # Используем Inline-кнопку (она надёжнее для WebApp)
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
+                ]
             )
             await message.answer(
-                "🎡 <b>Натисніть велику кнопку внизу екрана</b> (там, де зазвичай клавіатура), щоб покрутити колесо і дізнатися свій номер!",
-                reply_markup=keyboard,
-                parse_mode="HTML"
+                "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
+                reply_markup=keyboard
             )
         else:
             await message.answer("Привіт! Використовуйте кнопку в групі для участі в акції.")
@@ -166,22 +162,33 @@ async def start_telegram_bot():
                 await message.answer(
                     f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
                     f"Ваш щасливий номер: <b>{ticket}</b>\n"
-                    f"Випало на колесі: <b>{number}</b>\n\n"
-                    f"<i>Клавіатуру з рулеткою тепер можна закрити або сховати.</i>",
-                    parse_mode="HTML",
-                    reply_markup=types.ReplyKeyboardRemove() # Убираем кнопку-рулетку после регистрации
+                    f"Випало на колесі: <b>{number}</b>",
+                    parse_mode="HTML"
                 )
             else:
                 await message.answer(
                     f"❌ Ви вже зареєстровані в акції!\n"
                     f"Ваш номер: <b>{ticket}</b>\n"
                     f"Останнє випало на колесі: <b>{number}</b>",
-                    parse_mode="HTML",
-                    reply_markup=types.ReplyKeyboardRemove()
+                    parse_mode="HTML"
                 )
         except Exception as e:
             logger.error(f"❌ Ошибка обработки web_app_data: {e}")
             await message.answer("❌ Сталася помилка. Спробуйте ще раз.")
+
+    @dp.callback_query(F.data == "join_promo")
+    async def join_promo(callback: CallbackQuery):
+        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
+            ]
+        )
+        await callback.answer("Натисніть кнопку, щоб покрутити колесо!")
+        await callback.message.edit_text(
+            "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
+            reply_markup=keyboard
+        )
 
     # ---------- ОБРАБОТЧИК ПРИНЯТИЯ ЗАДАЧ ----------
     @dp.callback_query(F.data.startswith("take_"))
@@ -287,9 +294,7 @@ async def roulette_page():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>🎰 Колесо фортуни</title>
-        <!-- СКРИПТ TELEGRAM ОБЯЗАТЕЛЕН -->
         <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        
         <style>
             body {
                 text-align: center;
@@ -349,7 +354,8 @@ async def roulette_page():
             // Инициализация WebApp
             let tg = window.Telegram.WebApp;
             tg.expand();
-            
+            tg.ready();  // Обязательно вызываем!
+
             let isSpinning = false;
 
             function spin() {
@@ -369,16 +375,20 @@ async def roulette_page():
                         const finalNum = Math.floor(Math.random() * 9000) + 1000;
                         resultDiv.textContent = finalNum;
                         resultDiv.classList.remove('spinning');
-                        
+                        isSpinning = false;
+
                         document.querySelector('.hint').textContent = '✅ Відправляємо результат...';
-                        
-                        setTimeout(() => {
-                            if (tg) {
-                                tg.sendData(JSON.stringify({ number: finalNum }));
-                            } else {
-                                alert('Помилка: не вдалося зв\'язатися з Telegram');
-                            }
-                        }, 1200);
+
+                        // Отправляем данные в бота
+                        if (tg) {
+                            tg.sendData(JSON.stringify({ number: finalNum }));
+                            // Автоматически закрываем окно через 1 секунду
+                            setTimeout(() => {
+                                tg.close();
+                            }, 1000);
+                        } else {
+                            alert('Помилка: не вдалося зв\'язатися з Telegram');
+                        }
                     }
                 }, 100);
             }
