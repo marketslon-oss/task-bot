@@ -80,7 +80,9 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
         if existing_ticket is not None:
             return existing_ticket, False
 
-        ticket = random.randint(1000, 9999)
+        # БЕРЕМ НОМЕР ИЗ РУЛЕТКИ 
+        ticket = number 
+        
         now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
 
@@ -116,7 +118,6 @@ async def start_telegram_bot():
 
         if deep_link == "promo":
             webapp_url = "https://mayer-pro.onrender.com/roulette"
-            # Замена на ReplyKeyboardMarkup
             keyboard = ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="🎰 Відкрити рулетку", web_app=WebAppInfo(url=webapp_url))]
@@ -154,16 +155,14 @@ async def start_telegram_bot():
             if is_new:
                 await message.answer(
                     f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
-                    f"Ваш щасливий номер: <b>{ticket}</b>\n"
-                    f"Випало на колесі: <b>{number}</b>",
+                    f"Ваш щасливий номер: <b>{ticket}</b>",
                     parse_mode="HTML",
                     reply_markup=ReplyKeyboardRemove()
                 )
             else:
                 await message.answer(
                     f"❌ Ви вже зареєстровані в акції!\n"
-                    f"Ваш номер: <b>{ticket}</b>\n"
-                    f"Останнє випало на колесі: <b>{number}</b>",
+                    f"Ваш номер: <b>{ticket}</b>",
                     parse_mode="HTML",
                     reply_markup=ReplyKeyboardRemove()
                 )
@@ -182,7 +181,6 @@ async def start_telegram_bot():
             one_time_keyboard=False
         )
         await callback.answer("Відкриваємо меню акції...")
-        # При ReplyKeyboardMarkup нужно отправлять новое сообщение, а не редактировать старое
         await callback.message.answer(
             "🎡 Натисніть велику кнопку <b>ВНИЗУ екрана</b>, щоб покрутити колесо і дізнатися свій номер!",
             reply_markup=keyboard,
