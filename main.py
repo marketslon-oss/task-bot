@@ -113,9 +113,13 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
 
 # ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
+    # Небольшая задержка, чтобы старый процесс успел завершиться
+    await asyncio.sleep(2)
+    
     bot = Bot(token=TOKEN)
     await bot.delete_webhook()
     logger.info("✅ Webhook deleted")
+    
     dp = Dispatcher()
 
     @dp.message(Command("start"))
@@ -125,7 +129,6 @@ async def start_telegram_bot():
 
         if deep_link == "promo":
             webapp_url = "https://mayer-pro.onrender.com/roulette"
-            # Используем Inline-кнопку (она надёжнее для WebApp)
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
