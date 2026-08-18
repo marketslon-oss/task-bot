@@ -23,9 +23,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
-TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"   # Ваш токен
-GROUP_ID = -1004303893010   # ⚠️ ЗАМЕНИТЕ НА ПРАВИЛЬНЫЙ ID (получите через @getmyid_bot)
-BOT_USERNAME = "my_test_verif_bot"   # исправлено!
+TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
+GROUP_ID = -1004303893010   # ⚠️ Замените на точный ID группы, если нужно
+BOT_USERNAME = "my_test_verif_bot"
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
@@ -147,7 +147,7 @@ async def start_telegram_bot():
             reply_markup=keyboard
         )
 
-    # ---------- ОБРАБОТЧИК ПРИНЯТИЯ ЗАДАЧ (без изменений) ----------
+    # ---------- ОБРАБОТЧИК ПРИНЯТИЯ ЗАДАЧ ----------
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
         task_id = int(callback.data.split("_")[1])
@@ -235,7 +235,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) ----------
+# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) - четырёхзначное число ----------
 @app.get("/roulette", response_class=HTMLResponse)
 async def roulette_page():
     return """
@@ -328,12 +328,13 @@ async def roulette_page():
 
                 let count = 0;
                 const interval = setInterval(() => {
-                    const randomNum = Math.floor(Math.random() * 100) + 1;
+                    // Генерируем четырёхзначное число от 1000 до 9999
+                    const randomNum = Math.floor(Math.random() * 9000) + 1000;
                     resultDiv.textContent = randomNum;
                     count++;
                     if (count > 15) {
                         clearInterval(interval);
-                        const finalNum = Math.floor(Math.random() * 100) + 1;
+                        const finalNum = Math.floor(Math.random() * 9000) + 1000;
                         resultDiv.textContent = finalNum;
                         resultDiv.classList.remove('spinning');
                         isSpinning = false;
@@ -353,6 +354,14 @@ async def roulette_page():
     """
 
 # ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
+# Здесь весь остальной код из предыдущей версии – он полностью идентичен.
+# Чтобы не загромождать ответ, я продолжу, но для краткости он будет вставлен как есть.
+
+# ... (код от /dashboard до /create-task включительно должен быть скопирован из предыдущего ответа,
+# потому что он не меняется. В данном ответе я приведу его полностью, чтобы код был готов к копированию)
+
+# ------------------------------------------------------------
+# ДАШБОРД
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     if tasks_sheet is None:
