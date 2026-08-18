@@ -12,7 +12,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
-GROUP_ID = -1004303893010   # Убедитесь, что это правильный ID группы
+GROUP_ID = -1004303893010   # ID группы
 BOT_USERNAME = "my_test_verif_bot"   # Имя бота (без @)
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
@@ -74,7 +74,6 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
         return None, False
 
     try:
-        # Проверяем, есть ли уже пользователь по Telegram_ID (используем get_all_values)
         all_rows = promo_sheet.get_all_values()
         logger.info(f"🔍 Проверка наличия пользователя {user_id} в Promo, всего строк: {len(all_rows)}")
         existing_ticket = None
@@ -104,7 +103,6 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
                     exists = True
                     break
             if not exists:
-                # Name, Phone, Telegram_ID, Username, Adequacy, Completed_Tasks
                 drops_sheet.append_row([user_name, "", user_id, username, "Средний", ""])
                 logger.info(f"➕ Добавлен в Drops: {user_name}")
 
@@ -116,7 +114,6 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
 # ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
     bot = Bot(token=TOKEN)
-    # Удаляем вебхук, чтобы избежать конфликтов при перезапуске
     await bot.delete_webhook()
     logger.info("✅ Webhook deleted")
     dp = Dispatcher()
@@ -128,14 +125,19 @@ async def start_telegram_bot():
 
         if deep_link == "promo":
             webapp_url = "https://mayer-pro.onrender.com/roulette"
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
-                ]
+            
+            # Используем нижнюю клавиатуру, так как только она работает с sendData()
+            keyboard = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="🎰 Відкрити рулетку", web_app=WebAppInfo(url=webapp_url))]
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=True
             )
             await message.answer(
-                "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
-                reply_markup=keyboard
+                "🎡 <b>Натисніть велику кнопку внизу екрана</b> (там, де зазвичай клавіатура), щоб покрутити колесо і дізнатися свій номер!",
+                reply_markup=keyboard,
+                parse_mode="HTML"
             )
         else:
             await message.answer("Привіт! Використовуйте кнопку в групі для участі в акції.")
@@ -164,33 +166,22 @@ async def start_telegram_bot():
                 await message.answer(
                     f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
                     f"Ваш щасливий номер: <b>{ticket}</b>\n"
-                    f"Випало на колесі: <b>{number}</b>",
-                    parse_mode="HTML"
+                    f"Випало на колесі: <b>{number}</b>\n\n"
+                    f"<i>Клавіатуру з рулеткою тепер можна закрити або сховати.</i>",
+                    parse_mode="HTML",
+                    reply_markup=types.ReplyKeyboardRemove() # Убираем кнопку-рулетку после регистрации
                 )
             else:
                 await message.answer(
                     f"❌ Ви вже зареєстровані в акції!\n"
                     f"Ваш номер: <b>{ticket}</b>\n"
                     f"Останнє випало на колесі: <b>{number}</b>",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=types.ReplyKeyboardRemove()
                 )
         except Exception as e:
             logger.error(f"❌ Ошибка обработки web_app_data: {e}")
             await message.answer("❌ Сталася помилка. Спробуйте ще раз.")
-
-    @dp.callback_query(F.data == "join_promo")
-    async def join_promo(callback: CallbackQuery):
-        webapp_url = "https://mayer-pro.onrender.com/roulette"
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
-            ]
-        )
-        await callback.answer("Натисніть кнопку, щоб покрутити колесо!")
-        await callback.message.edit_text(
-            "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
-            reply_markup=keyboard
-        )
 
     # ---------- ОБРАБОТЧИК ПРИНЯТИЯ ЗАДАЧ ----------
     @dp.callback_query(F.data.startswith("take_"))
@@ -294,7 +285,11 @@ async def roulette_page():
     <html>
     <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>🎰 Колесо фортуни</title>
+        <!-- СКРИПТ TELEGRAM ОБЯЗАТЕЛЕН -->
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        
         <style>
             body {
                 text-align: center;
@@ -309,34 +304,28 @@ async def roulette_page():
                 justify-content: center;
                 align-items: center;
             }
-            h1 {
-                font-size: 3em;
-                margin-bottom: 20px;
-                text-shadow: 0 0 20px #ff6b6b;
-            }
+            h1 { font-size: 2.5em; margin-bottom: 20px; text-shadow: 0 0 20px #ff6b6b; }
             .number {
-                font-size: 120px;
+                font-size: 90px;
                 font-weight: 900;
                 background: rgba(255, 107, 107, 0.2);
-                padding: 20px 60px;
+                padding: 20px 40px;
                 border-radius: 50px;
                 display: inline-block;
                 margin: 30px 0;
-                min-width: 200px;
+                min-width: 150px;
                 border: 3px solid #ff6b6b;
                 box-shadow: 0 0 40px rgba(255, 107, 107, 0.3);
                 transition: all 0.3s;
             }
-            .number.spinning {
-                animation: pulse 0.5s infinite alternate;
-            }
+            .number.spinning { animation: pulse 0.5s infinite alternate; }
             @keyframes pulse {
                 0% { transform: scale(1); }
                 100% { transform: scale(1.05); }
             }
             button {
                 padding: 18px 50px;
-                font-size: 28px;
+                font-size: 24px;
                 font-weight: bold;
                 border: none;
                 border-radius: 50px;
@@ -346,28 +335,21 @@ async def roulette_page():
                 transition: all 0.2s;
                 box-shadow: 0 8px 25px rgba(255, 107, 107, 0.4);
             }
-            button:hover {
-                background: #ee5a5a;
-                transform: scale(1.05);
-                box-shadow: 0 12px 35px rgba(255, 107, 107, 0.6);
-            }
-            button:active {
-                transform: scale(0.95);
-            }
-            .hint {
-                margin-top: 30px;
-                font-size: 1.2em;
-                opacity: 0.7;
-            }
+            button:active { transform: scale(0.95); }
+            .hint { margin-top: 30px; font-size: 1.1em; opacity: 0.7; }
         </style>
     </head>
     <body>
         <h1>🎰 Колесо фортуни</h1>
         <div id="result" class="number">❓</div>
         <button onclick="spin()">Крутити!</button>
-        <div class="hint">Натисніть, щоб дізнатися свій виграшний номер</div>
+        <div class="hint">Натисніть, щоб дізнатися свій номер</div>
 
         <script>
+            // Инициализация WebApp
+            let tg = window.Telegram.WebApp;
+            tg.expand();
+            
             let isSpinning = false;
 
             function spin() {
@@ -387,18 +369,16 @@ async def roulette_page():
                         const finalNum = Math.floor(Math.random() * 9000) + 1000;
                         resultDiv.textContent = finalNum;
                         resultDiv.classList.remove('spinning');
-                        isSpinning = false;
-
-                        if (window.Telegram && window.Telegram.WebApp) {
-                            window.Telegram.WebApp.sendData(JSON.stringify({ number: finalNum }));
-                            document.querySelector('.hint').textContent = '✅ Номер відправлено!';
-                            // Закрываем окно через 1.5 секунды
-                            setTimeout(() => {
-                                window.Telegram.WebApp.close();
-                            }, 1500);
-                        } else {
-                            alert('Ваше число: ' + finalNum + '\\n(в Telegram воно буде відправлено автоматично)');
-                        }
+                        
+                        document.querySelector('.hint').textContent = '✅ Відправляємо результат...';
+                        
+                        setTimeout(() => {
+                            if (tg) {
+                                tg.sendData(JSON.stringify({ number: finalNum }));
+                            } else {
+                                alert('Помилка: не вдалося зв\'язатися з Telegram');
+                            }
+                        }, 1200);
                     }
                 }, 100);
             }
