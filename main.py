@@ -3,7 +3,7 @@ import logging
 import os
 import json
 import random
-import html  # для экранирования вывода в HTML
+import html
 from datetime import datetime
 from contextlib import asynccontextmanager
 
@@ -11,8 +11,9 @@ import gspread
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo
+from aiogram.filters import Command
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 logging.basicConfig(
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 # ==================== КОНФИГУРАЦИЯ (пока хардкод) ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010
+BOT_USERNAME = "my_test_task_bot"  # для ссылки
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
@@ -34,7 +36,6 @@ else:
 
 sh = gc.open("tasks_db")
 
-# Получаем все листы с обработкой ошибок
 def get_sheet(name):
     try:
         return sh.worksheet(name)
@@ -50,7 +51,6 @@ promo_sheet = get_sheet("Promo")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def get_next_task_id():
-    """Возвращает следующий ID задачи (макс + 1)"""
     if tasks_sheet is None:
         return 1
     records = tasks_sheet.get_all_records()
@@ -59,67 +59,103 @@ def get_next_task_id():
     ids = [r.get("id", 0) for r in records if isinstance(r.get("id"), (int, float))]
     return max(ids) + 1 if ids else 1
 
+def register_user(user_id: str, user_name: str, username: str):
+    """Регистрирует пользователя в акции, возвращает ticket"""
+    if promo_sheet is None:
+        return None
+
+    rows = promo_sheet.get_all_records()
+    existing = next((r for r in rows if str(r.get("Telegram_ID")) == user_id), None)
+
+    if existing:
+        return existing.get("Ticket")
+
+    ticket = random.randint(1000, 9999)
+    now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
+
+    # Запись в Drops, если ещё нет
+    if drops_sheet is not None:
+        drops_rows = drops_sheet.get_all_values()
+        user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
+        if not user_in_drops:
+            drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
+
+    return ticket
+
 # ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
 
-    @dp.callback_query(F.data == "join_promo")
-    async def join_promo(callback: CallbackQuery):
-        user_id = str(callback.from_user.id)
-        user_name = callback.from_user.first_name
-        username = callback.from_user.username or ""
-        target_chat_id = callback.from_user.id
-        
-        if promo_sheet is None:
-            await callback.answer("❌ Ошибка: лист Promo не найден", show_alert=True)
+    # Обработчик команды /start с deep link (например, /start promo)
+    @dp.message(Command("start"))
+    async def start_command(message: Message):
+        args = message.text.split()
+        deep_link = args[1] if len(args) > 1 else None
+
+        user_id = str(message.from_user.id)
+        user_name = message.from_user.first_name
+        username = message.from_user.username or ""
+
+        ticket = register_user(user_id, user_name, username)
+        if ticket is None:
+            await message.answer("❌ Вибачте, акція тимчасово недоступна.")
             return
 
-        rows = promo_sheet.get_all_records()
-        existing = next((r for r in rows if str(r.get("Telegram_ID")) == user_id), None)
-        
         webapp_url = "https://mayer-pro.onrender.com/roulette"
-        pm_keyboard = InlineKeyboardMarkup(
+        keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
             ]
         )
 
-        if existing:
-            ticket = existing.get("Ticket")
-            await callback.answer("Перевірте особисті повідомлення від бота! 📩", show_alert=True)
-            try:
-                await bot.send_message(
-                    chat_id=target_chat_id,
-                    text=f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>\n\nМожете відкрити рулетку знову:",
-                    reply_markup=pm_keyboard,
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.error(f"Не вдалося надіслати повідомлення користувачу {user_id}: {e}")
+        # Если пользователь только что зарегистрировался (deep link == "promo")
+        if deep_link == "promo":
+            await message.answer(
+                f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>\n\nНатисніть кнопку нижче, щоб покрутити колесо:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
         else:
-            ticket = random.randint(1000, 9999)
-            now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
-            
-            if drops_sheet is not None:
-                drops_rows = drops_sheet.get_all_values()
-                user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
-                if not user_in_drops:
-                    drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
+            # Если просто зашли в бота без параметра — показываем статус
+            await message.answer(
+                f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>\n\nМожете відкрити рулетку знову:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
 
-            await callback.answer("Готово! Перевірте особисті повідомлення 📩", show_alert=True)
-            try:
-                await bot.send_message(
-                    chat_id=target_chat_id,
-                    text=f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>\n\nНатисніть кнопку нижче, щоб покрутити колесо:",
-                    reply_markup=pm_keyboard,
-                    parse_mode="HTML"
-                )
-            except Exception as e:
-                logger.error(f"Не вдалося надіслати повідомлення користувачу {user_id}: {e}")
+    # Старый callback (оставляем на случай, если кто-то нажмёт старую кнопку)
+    @dp.callback_query(F.data == "join_promo")
+    async def join_promo(callback: CallbackQuery):
+        user_id = str(callback.from_user.id)
+        user_name = callback.from_user.first_name
+        username = callback.from_user.username or ""
 
+        ticket = register_user(user_id, user_name, username)
+        if ticket is None:
+            await callback.answer("❌ Помилка акції", show_alert=True)
+            return
+
+        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
+            ]
+        )
+
+        await callback.answer("Готово! Перевірте особисті повідомлення 📩", show_alert=True)
+        try:
+            await bot.send_message(
+                chat_id=callback.from_user.id,
+                text=f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>\n\nНатисніть кнопку нижче, щоб покрутити колесо:",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Не вдалося надіслати повідомлення: {e}")
+
+    # Обработчик принятия задачи (без изменений)
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
         task_id = int(callback.data.split("_")[1])
@@ -147,7 +183,6 @@ async def start_telegram_bot():
 
         project_name = str(task_data.get("Category", "General")).strip()
 
-        # Обновляем Drops
         if drops_sheet is not None:
             drops_rows = drops_sheet.get_all_values()
             user_row_idx = None
@@ -168,7 +203,6 @@ async def start_telegram_bot():
             else:
                 drops_sheet.append_row([user_name, "", user_id, user_username, "Средний", project_name])
 
-        # Обновляем Assignee
         current_assignees = str(task_data.get("Assignee", ""))
         if current_assignees:
             if user_name not in current_assignees.split(", "):
@@ -192,7 +226,6 @@ async def start_telegram_bot():
             base_text = original_text.split("\n\n🚀")[0]
         else:
             base_text = original_text
-            
         new_text = base_text + f"\n\n🚀 <b>В работе у:</b> {new_assignees}"
         
         try:
@@ -217,7 +250,6 @@ async def dashboard(request: Request):
         return HTMLResponse("<h1>Ошибка: лист Tasks не найден</h1>", status_code=500)
 
     tasks = tasks_sheet.get_all_records()
-    
     total_in_progress = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'in_progress')
     total_new = sum(1 for t in tasks if str(t.get('Status', '')).strip() == 'new')
 
@@ -322,7 +354,6 @@ async def dashboard(request: Request):
                 assignee_display = "—"
                 links_display = "—"
             
-            # Экранируем заголовок и описание
             title_safe = html.escape(str(task.get('Title', '')))
             desc_safe = html.escape(str(task.get('Description', '')))
             
@@ -442,7 +473,7 @@ async def close_task(task_id: int):
             break
     return RedirectResponse(url="/", status_code=303)
 
-# ---------- ОБНОВЛЕНИЕ ТЕЛЕФОНА В DROPS ----------
+# ---------- ОБНОВЛЕНИЕ ТЕЛЕФОНА ----------
 @app.post("/update-phone")
 async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
     if drops_sheet is not None:
@@ -456,7 +487,7 @@ async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
             logger.error(f"Ошибка обновления телефона: {e}")
     return RedirectResponse(url="/drops", status_code=303)
 
-# ---------- ОБНОВЛЕНИЕ АДЕКВАТНОСТИ В DROPS ----------
+# ---------- ОБНОВЛЕНИЕ АДЕКВАТНОСТИ ----------
 @app.post("/update-adequacy")
 async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
     if drops_sheet is not None:
@@ -477,7 +508,6 @@ async def promo_setup(request: Request):
         return HTMLResponse("<h1>Ошибка: лист Promo не найден</h1>", status_code=500)
 
     promo_rows = promo_sheet.get_all_values()
-    # Если есть заголовки, пропускаем их, иначе берём все строки
     if promo_rows and promo_rows[0] and any(col.strip() for col in promo_rows[0]):
         promo_rows = promo_rows[1:]
     else:
@@ -538,15 +568,18 @@ async def promo_setup(request: Request):
     </html>
     """)
 
-# ---------- ОТПРАВКА АКЦИИ В ГРУППУ ----------
+# ---------- ОТПРАВКА АКЦИИ В ГРУППУ (одна кнопка) ----------
 @app.post("/send-promo")
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
     try:
+        # Только одна кнопка – ссылка на бота с параметром start=promo
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Отримати квиток", callback_data="join_promo")],
-                [InlineKeyboardButton(text="📩 Запустити бота (якщо не працює)", url="https://t.me/my_test_task_bot?start=promo")]
+                [InlineKeyboardButton(
+                    text="🎰 Взяти участь в акції",
+                    url=f"https://t.me/{BOT_USERNAME}?start=promo"
+                )]
             ]
         )
         await bot.send_message(chat_id=GROUP_ID, text=text, reply_markup=keyboard)
@@ -555,7 +588,6 @@ async def send_promo(text: str = Form(...)):
         logger.error(f"❌ ОШИБКА ОТПРАВКИ В ТЕЛЕГРАМ: {e}")
     finally:
         await bot.session.close()
-        
     return RedirectResponse(url="/", status_code=303)
 
 # ---------- СТРАНИЦА ДРОПОВ ----------
@@ -725,13 +757,10 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
         return HTMLResponse("<h1>Ошибка: лист Tasks не найден</h1>", status_code=500)
 
     bot = Bot(token=TOKEN)
-    
     task_id = get_next_task_id()
-    
     clean_category = category.strip()
     msg_header = f"🔥 <b>{clean_category}</b>"
     msg_payment = f"💰💰 <b>Оплата: {payment.strip()} грн</b> 💰💰"
-    
     message_text = f"{msg_header}\n\n{description.strip()}\n\n{msg_payment}"
     
     keyboard = InlineKeyboardMarkup(
@@ -747,13 +776,12 @@ async def create_task(category: str = Form(...), payment: str = Form(...), descr
             reply_markup=keyboard,
             parse_mode="HTML"
         )
-        # Исправлено: убрано дублирование category, теперь 7 полей
         tasks_sheet.append_row([
             task_id,
             clean_category,
             description.strip(),
             "new",
-            "",  # Assignee
+            "",
             message.message_id,
             payment.strip()
         ])
