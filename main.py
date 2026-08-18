@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"   # Ваш токен
-GROUP_ID = -1004303893010   # Убедитесь, что это правильный ID
-BOT_USERNAME = "my_test_verify_bot"
+GROUP_ID = -1004303893010   # ⚠️ ЗАМЕНИТЕ НА ПРАВИЛЬНЫЙ ID (получите через @getmyid_bot)
+BOT_USERNAME = "my_test_verif_bot"   # исправлено!
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
@@ -92,7 +92,6 @@ async def start_telegram_bot():
         deep_link = args[1] if len(args) > 1 else None
 
         if deep_link == "promo":
-            # Исправлено: жёстко прописанный URL вашего приложения
             webapp_url = "https://mayer-pro.onrender.com/roulette"
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
