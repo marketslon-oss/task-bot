@@ -22,10 +22,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== КОНФИГУРАЦИЯ (исправлено!) ====================
-TOKEN = "СЮДА_ВСТАВЬТЕ_ТОКЕН_ОТ_@my_test_verify_bot"   # ⬅️ ЗАМЕНИТЕ!
+# ==================== КОНФИГУРАЦИЯ ====================
+TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs_@my_test_verify_bot"   # ВСТАВЬТЕ СВОЙ ТОКЕН
 GROUP_ID = -1004303893010
-BOT_USERNAME = "my_test_verify_bot"   # ⬅️ ИСПРАВЛЕНО!
+BOT_USERNAME = "my_test_verify_bot"
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
@@ -59,14 +59,13 @@ def get_next_task_id():
     ids = [r.get("id", 0) for r in records if isinstance(r.get("id"), (int, float))]
     return max(ids) + 1 if ids else 1
 
-def register_user(user_id: str, user_name: str, username: str):
-    """Регистрирует пользователя в акции, возвращает ticket"""
+def register_user_with_number(user_id: str, user_name: str, username: str, number: int):
+    """Регистрирует пользователя с полученным номером (из колеса)"""
     if promo_sheet is None:
         return None
 
     rows = promo_sheet.get_all_records()
     existing = next((r for r in rows if str(r.get("Telegram_ID")) == user_id), None)
-
     if existing:
         return existing.get("Ticket")
 
@@ -92,65 +91,64 @@ async def start_telegram_bot():
         args = message.text.split()
         deep_link = args[1] if len(args) > 1 else None
 
-        user_id = str(message.from_user.id)
-        user_name = message.from_user.first_name
-        username = message.from_user.username or ""
-
-        ticket = register_user(user_id, user_name, username)
-        if ticket is None:
-            await message.answer("❌ Вибачте, акція тимчасово недоступна.")
-            return
-
-        # Ссылка на WebApp (используем наш собственный эндпоинт /roulette)
-        webapp_url = "https://ВАШ_ДОМЕН_НА_RENDER.com/roulette"   # ⬅️ ЗАМЕНИТЕ НА СВОЙ АДРЕС!
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
-            ]
-        )
-
         if deep_link == "promo":
+            # Исправлено: жёстко прописанный URL вашего приложения
+            webapp_url = "https://mayer-pro.onrender.com/roulette"
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
+                ]
+            )
             await message.answer(
-                f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>\n\nНатисніть кнопку нижче, щоб покрутити колесо:",
-                reply_markup=keyboard,
-                parse_mode="HTML"
+                "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
+                reply_markup=keyboard
             )
         else:
-            await message.answer(
-                f"❌ Ви вже в акції! Ваш номер: <b>{ticket}</b>\n\nМожете відкрити рулетку знову:",
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
+            await message.answer("Привіт! Використовуйте кнопку в групі для участі в акції.")
 
-    @dp.callback_query(F.data == "join_promo")
-    async def join_promo(callback: CallbackQuery):
-        user_id = str(callback.from_user.id)
-        user_name = callback.from_user.first_name
-        username = callback.from_user.username or ""
-
-        ticket = register_user(user_id, user_name, username)
-        if ticket is None:
-            await callback.answer("❌ Помилка акції", show_alert=True)
-            return
-
-        webapp_url = "https://ВАШ_ДОМЕН_НА_RENDER.com/roulette"
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
-            ]
-        )
-
-        await callback.answer("Готово! Перевірте особисті повідомлення 📩", show_alert=True)
+    @dp.message(F.web_app_data)
+    async def handle_web_app_data(message: Message):
         try:
-            await bot.send_message(
-                chat_id=callback.from_user.id,
-                text=f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\nВаш щасливий номер: <b>{ticket}</b>\n\nНатисніть кнопку нижче, щоб покрутити колесо:",
-                reply_markup=keyboard,
+            data = json.loads(message.web_app_data.data)
+            number = data.get('number')
+            if number is None:
+                await message.answer("❌ Помилка: не вдалося отримати число.")
+                return
+
+            user_id = str(message.from_user.id)
+            user_name = message.from_user.first_name
+            username = message.from_user.username or ""
+
+            ticket = register_user_with_number(user_id, user_name, username, number)
+            if ticket is None:
+                await message.answer("❌ Ви вже зареєстровані! Ваш номер: ...")
+                return
+
+            await message.answer(
+                f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
+                f"Ваш щасливий номер: <b>{ticket}</b>\n"
+                f"Випало на колесі: <b>{number}</b>",
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error(f"Не вдалося надіслати повідомлення: {e}")
+            logger.error(f"Помилка обробки WebAppData: {e}")
+            await message.answer("❌ Сталася помилка. Спробуйте ще раз.")
 
+    @dp.callback_query(F.data == "join_promo")
+    async def join_promo(callback: CallbackQuery):
+        webapp_url = "https://mayer-pro.onrender.com/roulette"
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
+            ]
+        )
+        await callback.answer("Натисніть кнопку, щоб покрутити колесо!")
+        await callback.message.edit_text(
+            "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
+            reply_markup=keyboard
+        )
+
+    # ---------- ОБРАБОТЧИК ПРИНЯТИЯ ЗАДАЧ (без изменений) ----------
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
         task_id = int(callback.data.split("_")[1])
@@ -340,8 +338,13 @@ async def roulette_page():
                         resultDiv.textContent = finalNum;
                         resultDiv.classList.remove('spinning');
                         isSpinning = false;
-                        // Ви можете надіслати результат у бота, якщо потрібно
-                        // Telegram.WebApp.sendData(JSON.stringify({ number: finalNum }));
+
+                        if (window.Telegram && window.Telegram.WebApp) {
+                            window.Telegram.WebApp.sendData(JSON.stringify({ number: finalNum }));
+                            document.querySelector('.hint').textContent = '✅ Номер відправлено!';
+                        } else {
+                            alert('Ваше число: ' + finalNum + '\\n(в Telegram воно буде відправлено автоматично)');
+                        }
                     }
                 }, 100);
             }
@@ -351,11 +354,6 @@ async def roulette_page():
     """
 
 # ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
-# ... (они такие же, как в предыдущем коде, я не буду дублировать, чтобы не перегружать ответ,
-# но вы можете взять их из моего предыдущего сообщения, они не меняются)
-# Я добавлю их ниже для полноты.
-
-# ---------- ДАШБОРД ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     if tasks_sheet is None:
@@ -573,7 +571,6 @@ async def dashboard(request: Request):
     """
     return HTMLResponse(content=dashboard_html)
 
-# ---------- ЗАКРЫТЬ ЗАДАЧУ ----------
 @app.get("/close-task/{task_id}")
 async def close_task(task_id: int):
     if tasks_sheet is None:
@@ -585,7 +582,6 @@ async def close_task(task_id: int):
             break
     return RedirectResponse(url="/", status_code=303)
 
-# ---------- ОБНОВЛЕНИЕ ТЕЛЕФОНА ----------
 @app.post("/update-phone")
 async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
     if drops_sheet is not None:
@@ -599,7 +595,6 @@ async def update_phone(tg_id: str = Form(...), phone: str = Form(...)):
             logger.error(f"Ошибка обновления телефона: {e}")
     return RedirectResponse(url="/drops", status_code=303)
 
-# ---------- ОБНОВЛЕНИЕ АДЕКВАТНОСТИ ----------
 @app.post("/update-adequacy")
 async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
     if drops_sheet is not None:
@@ -613,7 +608,6 @@ async def update_adequacy(tg_id: str = Form(...), status: str = Form(...)):
             logger.error(f"Ошибка обновления адекватности: {e}")
     return RedirectResponse(url="/drops", status_code=303)
 
-# ---------- СТРАНИЦА УПРАВЛЕНИЯ АКЦИЕЙ ----------
 @app.get("/promo-setup", response_class=HTMLResponse)
 async def promo_setup(request: Request):
     if promo_sheet is None:
@@ -680,7 +674,6 @@ async def promo_setup(request: Request):
     </html>
     """)
 
-# ---------- ОТПРАВКА АКЦИИ В ГРУППУ (одна кнопка) ----------
 @app.post("/send-promo")
 async def send_promo(text: str = Form(...)):
     bot = Bot(token=TOKEN)
@@ -701,7 +694,6 @@ async def send_promo(text: str = Form(...)):
         await bot.session.close()
     return RedirectResponse(url="/", status_code=303)
 
-# ---------- СТРАНИЦА ДРОПОВ ----------
 @app.get("/drops", response_class=HTMLResponse)
 async def drops_page(request: Request):
     rows_html = ""
@@ -806,7 +798,6 @@ async def drops_page(request: Request):
     """
     return HTMLResponse(content=drops_html)
 
-# ---------- СТРАНИЦА СОЗДАНИЯ ЗАДАЧИ ----------
 @app.get("/create", response_class=HTMLResponse)
 async def create_page(request: Request):
     category_options = ""
@@ -861,7 +852,6 @@ async def create_page(request: Request):
     """
     return HTMLResponse(content=create_html)
 
-# ---------- СОЗДАНИЕ ЗАДАЧИ (POST) ----------
 @app.post("/create-task")
 async def create_task(category: str = Form(...), payment: str = Form(...), description: str = Form(...)):
     if tasks_sheet is None:
