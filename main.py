@@ -22,10 +22,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==================== КОНФИГУРАЦИЯ (пока хардкод) ====================
-TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
+# ==================== КОНФИГУРАЦИЯ ====================
+TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"   # убедитесь, что это токен @my_test_verif_bot
 GROUP_ID = -1004303893010
-BOT_USERNAME = "my_test_task_bot"  # для ссылки
+BOT_USERNAME = "my_test_verif_bot"   # исправлено!
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
