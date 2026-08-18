@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
-GROUP_ID = -1004303893010   # ⚠️ Убедитесь, что это правильный ID группы
+GROUP_ID = -1004303893010   # Убедитесь, что это правильный ID группы
 BOT_USERNAME = "my_test_verif_bot"
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
@@ -44,13 +44,15 @@ def get_sheet(name):
         return None
 
 tasks_sheet = get_sheet("Tasks")
-analytics_sheet = get_sheet("Analytics/Logs") or get_sheet("Analytics")
+analytics_sheet = get_sheet("Analytics") or get_sheet("Analytics/Logs")
 categories_sheet = get_sheet("Categories")
 drops_sheet = get_sheet("Drops")
 promo_sheet = get_sheet("Promo")
 
 if promo_sheet is None:
-    logger.error("❌ Лист Promo не найден! Создайте лист с именем 'Promo' с колонками: Дата, Telegram_ID, Имя, Username, Ticket")
+    logger.error("❌ Лист 'Promo' не найден! Создайте его с колонками: Date, Telegram_ID, Name, Username, Ticket")
+if drops_sheet is None:
+    logger.error("❌ Лист 'Drops' не найден! Создайте его с колонками: Name, Phone, Telegram_ID, Username, Adequacy, Completed_Tasks")
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 def get_next_task_id():
@@ -72,13 +74,18 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
         return None, False
 
     try:
-        # Проверяем, есть ли уже пользователь
-        records = promo_sheet.get_all_records()
-        existing = next((r for r in records if str(r.get("Telegram_ID")) == user_id), None)
-        if existing:
-            ticket = existing.get("Ticket")
-            logger.info(f"👤 Пользователь {user_id} уже зарегистрирован, ticket {ticket}")
-            return ticket, False
+        # Проверяем, есть ли уже пользователь по Telegram_ID (используем get_all_values)
+        all_rows = promo_sheet.get_all_values()
+        existing_ticket = None
+        for row in all_rows[1:]:  # пропускаем заголовок
+            if len(row) >= 2 and str(row[1]) == user_id:
+                if len(row) >= 5:
+                    existing_ticket = row[4]
+                break
+
+        if existing_ticket is not None:
+            logger.info(f"👤 Пользователь {user_id} уже зарегистрирован, ticket {existing_ticket}")
+            return existing_ticket, False
 
         # Новый пользователь – генерируем билет
         ticket = random.randint(1000, 9999)
@@ -89,9 +96,14 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
         # Запись в Drops, если есть
         if drops_sheet is not None:
             drops_rows = drops_sheet.get_all_values()
-            user_in_drops = any(len(r) >= 3 and str(r[2]) == user_id for r in drops_rows)
-            if not user_in_drops:
-                drops_sheet.append_row([user_name, "", user_id, username, "Средний"])
+            exists = False
+            for row in drops_rows[1:]:
+                if len(row) >= 3 and str(row[2]) == user_id:
+                    exists = True
+                    break
+            if not exists:
+                # Name, Phone, Telegram_ID, Username, Adequacy, Completed_Tasks
+                drops_sheet.append_row([user_name, "", user_id, username, "Средний", ""])
                 logger.info(f"➕ Добавлен в Drops: {user_name}")
 
         return ticket, True
@@ -144,7 +156,6 @@ async def start_telegram_bot():
                 return
 
             if is_new:
-                # Новый участник
                 await message.answer(
                     f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
                     f"Ваш щасливий номер: <b>{ticket}</b>\n"
@@ -152,7 +163,6 @@ async def start_telegram_bot():
                     parse_mode="HTML"
                 )
             else:
-                # Уже участвует
                 await message.answer(
                     f"❌ Ви вже зареєстровані в акції!\n"
                     f"Ваш номер: <b>{ticket}</b>\n"
@@ -218,10 +228,16 @@ async def start_telegram_bot():
                 if user_username and (len(row_data) < 4 or row_data[3] != user_username):
                     drops_sheet.update_cell(user_row_idx, 4, user_username)
                 
-                user_projects = row_data[5:] if len(row_data) > 5 else []
-                if project_name not in user_projects:
-                    next_col = max(6, len(row_data) + 1)
-                    drops_sheet.update_cell(user_row_idx, next_col, project_name)
+                # Обновляем выполненные проекты (столбец 6)
+                if len(row_data) >= 6:
+                    completed = row_data[5] if row_data[5] else ""
+                    projects_list = [p.strip() for p in completed.split(',') if p.strip()]
+                    if project_name not in projects_list:
+                        projects_list.append(project_name)
+                        new_completed = ', '.join(projects_list)
+                        drops_sheet.update_cell(user_row_idx, 6, new_completed)
+                else:
+                    drops_sheet.update_cell(user_row_idx, 6, project_name)
             else:
                 drops_sheet.append_row([user_name, "", user_id, user_username, "Средний", project_name])
 
@@ -371,6 +387,10 @@ async def roulette_page():
                         if (window.Telegram && window.Telegram.WebApp) {
                             window.Telegram.WebApp.sendData(JSON.stringify({ number: finalNum }));
                             document.querySelector('.hint').textContent = '✅ Номер відправлено!';
+                            // Закрываем окно через 1.5 секунды
+                            setTimeout(() => {
+                                window.Telegram.WebApp.close();
+                            }, 1500);
                         } else {
                             alert('Ваше число: ' + finalNum + '\\n(в Telegram воно буде відправлено автоматично)');
                         }
@@ -382,7 +402,9 @@ async def roulette_page():
     </html>
     """
 
-# ---------- ДАШБОРД ----------
+# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
+# (код полностью идентичен предыдущей версии, но я приведу его для полноты)
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     if tasks_sheet is None:
@@ -600,7 +622,6 @@ async def dashboard(request: Request):
     """
     return HTMLResponse(content=dashboard_html)
 
-# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ ----------
 @app.get("/close-task/{task_id}")
 async def close_task(task_id: int):
     if tasks_sheet is None:
