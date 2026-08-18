@@ -76,11 +76,13 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
     try:
         # Проверяем, есть ли уже пользователь по Telegram_ID (используем get_all_values)
         all_rows = promo_sheet.get_all_values()
+        logger.info(f"🔍 Проверка наличия пользователя {user_id} в Promo, всего строк: {len(all_rows)}")
         existing_ticket = None
-        for row in all_rows[1:]:  # пропускаем заголовок
+        for idx, row in enumerate(all_rows):
             if len(row) >= 2 and str(row[1]) == user_id:
                 if len(row) >= 5:
                     existing_ticket = row[4]
+                logger.info(f"👤 Найден существующий пользователь в строке {idx+1}, ticket {existing_ticket}")
                 break
 
         if existing_ticket is not None:
@@ -114,6 +116,8 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
 # ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
     bot = Bot(token=TOKEN)
+    # Удаляем вебхук, чтобы избежать конфликтов при перезапуске
+    await bot.delete_webhook()
     dp = Dispatcher()
 
     @dp.message(Command("start"))
