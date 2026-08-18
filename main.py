@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
 GROUP_ID = -1004303893010   # Убедитесь, что это правильный ID группы
-BOT_USERNAME = "my_test_verif_bot"
+BOT_USERNAME = "my_test_verif_bot"   # Имя бота (без @)
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
@@ -118,6 +118,7 @@ async def start_telegram_bot():
     bot = Bot(token=TOKEN)
     # Удаляем вебхук, чтобы избежать конфликтов при перезапуске
     await bot.delete_webhook()
+    logger.info("✅ Webhook deleted")
     dp = Dispatcher()
 
     @dp.message(Command("start"))
@@ -406,9 +407,7 @@ async def roulette_page():
     </html>
     """
 
-# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
-# (код полностью идентичен предыдущей версии, но я приведу его для полноты)
-
+# ---------- ДАШБОРД ----------
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     if tasks_sheet is None:
