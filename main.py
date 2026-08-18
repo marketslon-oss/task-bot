@@ -23,8 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
-TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs_@my_test_verify_bot"   # ВСТАВЬТЕ СВОЙ ТОКЕН
-GROUP_ID = -1004303893010
+TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"   # Ваш токен
+GROUP_ID = -1004303893010   # Убедитесь, что это правильный ID
 BOT_USERNAME = "my_test_verify_bot"
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
