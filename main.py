@@ -12,7 +12,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 import uvicorn
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 # ==================== КОНФИГУРАЦИЯ ====================
 TOKEN = "8835314909:AAHItD_URF58cxnr4BlFx3FXakWh6D5ZfGs"
-GROUP_ID = -1004303893010   # ID группы – убедитесь, что он правильный
-BOT_USERNAME = "my_test_verif_bot"   # Имя бота (без @)
+GROUP_ID = -1004303893010
+BOT_USERNAME = "my_test_verif_bot"
 
 # ==================== ПОДКЛЮЧЕНИЕ К GOOGLE SHEETS ====================
 if "GOOGLE_CREDENTIALS" in os.environ:
@@ -65,36 +65,25 @@ def get_next_task_id():
     return max(ids) + 1 if ids else 1
 
 def register_user_with_number(user_id: str, user_name: str, username: str, number: int):
-    """
-    Регистрирует пользователя, если его ещё нет.
-    Возвращает (ticket, is_new) – is_new = True если только что зарегистрирован.
-    """
     if promo_sheet is None:
-        logger.error("❌ Нет доступа к листу Promo")
         return None, False
 
     try:
         all_rows = promo_sheet.get_all_values()
-        logger.info(f"🔍 Проверка наличия пользователя {user_id} в Promo, всего строк: {len(all_rows)}")
         existing_ticket = None
-        for idx, row in enumerate(all_rows):
+        for row in all_rows:
             if len(row) >= 2 and str(row[1]) == user_id:
                 if len(row) >= 5:
                     existing_ticket = row[4]
-                logger.info(f"👤 Найден существующий пользователь в строке {idx+1}, ticket {existing_ticket}")
                 break
 
         if existing_ticket is not None:
-            logger.info(f"👤 Пользователь {user_id} уже зарегистрирован, ticket {existing_ticket}")
             return existing_ticket, False
 
-        # Новый пользователь – генерируем билет
         ticket = random.randint(1000, 9999)
         now_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         promo_sheet.append_row([now_time, user_id, user_name, username, ticket])
-        logger.info(f"✅ Новый пользователь {user_name} ({user_id}) зарегистрирован с ticket {ticket}")
 
-        # Запись в Drops, если есть
         if drops_sheet is not None:
             drops_rows = drops_sheet.get_all_values()
             exists = False
@@ -104,7 +93,6 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
                     break
             if not exists:
                 drops_sheet.append_row([user_name, "", user_id, username, "Средний", ""])
-                logger.info(f"➕ Добавлен в Drops: {user_name}")
 
         return ticket, True
     except Exception as e:
@@ -113,7 +101,6 @@ def register_user_with_number(user_id: str, user_name: str, username: str, numbe
 
 # ==================== ЛОГИКА ТЕЛЕГРАМ БОТА ====================
 async def start_telegram_bot():
-    # Небольшая задержка, чтобы старый процесс успел завершиться
     await asyncio.sleep(2)
     
     bot = Bot(token=TOKEN)
@@ -129,21 +116,24 @@ async def start_telegram_bot():
 
         if deep_link == "promo":
             webapp_url = "https://mayer-pro.onrender.com/roulette"
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
-                ]
+            # Замена на ReplyKeyboardMarkup
+            keyboard = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="🎰 Відкрити рулетку", web_app=WebAppInfo(url=webapp_url))]
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=False
             )
             await message.answer(
-                "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
-                reply_markup=keyboard
+                "🎡 Натисніть велику кнопку <b>ВНИЗУ екрана</b>, щоб покрутити колесо і дізнатися свій номер!",
+                reply_markup=keyboard,
+                parse_mode="HTML"
             )
         else:
             await message.answer("Привіт! Використовуйте кнопку в групі для участі в акції.")
 
     @dp.message(F.web_app_data)
     async def handle_web_app_data(message: Message):
-        logger.info(f"📩 Получены данные из WebApp: {message.web_app_data.data}")
         try:
             data = json.loads(message.web_app_data.data)
             number = data.get('number')
@@ -166,14 +156,16 @@ async def start_telegram_bot():
                     f"🎉 <b>Вітаю, ви прийняли участь у АКЦІЇ!</b>\n"
                     f"Ваш щасливий номер: <b>{ticket}</b>\n"
                     f"Випало на колесі: <b>{number}</b>",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=ReplyKeyboardRemove()
                 )
             else:
                 await message.answer(
                     f"❌ Ви вже зареєстровані в акції!\n"
                     f"Ваш номер: <b>{ticket}</b>\n"
                     f"Останнє випало на колесі: <b>{number}</b>",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    reply_markup=ReplyKeyboardRemove()
                 )
         except Exception as e:
             logger.error(f"❌ Ошибка обработки web_app_data: {e}")
@@ -182,18 +174,21 @@ async def start_telegram_bot():
     @dp.callback_query(F.data == "join_promo")
     async def join_promo(callback: CallbackQuery):
         webapp_url = "https://mayer-pro.onrender.com/roulette"
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🎰 Крутити колесо фортуни", web_app=WebAppInfo(url=webapp_url))]
-            ]
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="🎰 Відкрити рулетку", web_app=WebAppInfo(url=webapp_url))]
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=False
         )
-        await callback.answer("Натисніть кнопку, щоб покрутити колесо!")
-        await callback.message.edit_text(
-            "🎡 Натисніть кнопку нижче, щоб покрутити колесо і дізнатися свій номер!",
-            reply_markup=keyboard
+        await callback.answer("Відкриваємо меню акції...")
+        # При ReplyKeyboardMarkup нужно отправлять новое сообщение, а не редактировать старое
+        await callback.message.answer(
+            "🎡 Натисніть велику кнопку <b>ВНИЗУ екрана</b>, щоб покрутити колесо і дізнатися свій номер!",
+            reply_markup=keyboard,
+            parse_mode="HTML"
         )
 
-    # ---------- ОБРАБОТЧИК ПРИНЯТИЯ ЗАДАЧ ----------
     @dp.callback_query(F.data.startswith("take_"))
     async def handle_take_task(callback: CallbackQuery):
         task_id = int(callback.data.split("_")[1])
@@ -234,7 +229,6 @@ async def start_telegram_bot():
                 if user_username and (len(row_data) < 4 or row_data[3] != user_username):
                     drops_sheet.update_cell(user_row_idx, 4, user_username)
                 
-                # Обновляем выполненные проекты (столбец 6)
                 if len(row_data) >= 6:
                     completed = row_data[5] if row_data[5] else ""
                     projects_list = [p.strip() for p in completed.split(',') if p.strip()]
@@ -287,7 +281,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) - ИСПРАВЛЕННАЯ ----------
+# ---------- СТРАНИЦА РУЛЕТКИ (WebApp) ----------
 @app.get("/roulette", response_class=HTMLResponse)
 async def roulette_page():
     return """
@@ -350,18 +344,18 @@ async def roulette_page():
     <body>
         <h1>🎰 Колесо фортуни</h1>
         <div id="result" class="number">❓</div>
-        <button onclick="spin()">Крутити!</button>
+        <button id="spin-btn">Крутити!</button>
         <div class="hint">Натисніть, щоб дізнатися свій номер</div>
 
         <script>
-            // Инициализация WebApp
             let tg = window.Telegram.WebApp;
             tg.expand();
             tg.ready();
 
             let isSpinning = false;
-
-            function spin() {
+            
+            // Привязываем клик через слушатель событий
+            document.getElementById('spin-btn').addEventListener('click', function() {
                 if (isSpinning) return;
                 isSpinning = true;
                 const resultDiv = document.getElementById('result');
@@ -382,10 +376,8 @@ async def roulette_page():
 
                         document.querySelector('.hint').textContent = '✅ Відправляємо результат...';
 
-                        // Отправляем данные в бота
                         if (tg) {
                             tg.sendData(JSON.stringify({ number: finalNum }));
-                            // Автоматически закрываем окно через 1 секунду
                             setTimeout(() => {
                                 tg.close();
                             }, 1000);
@@ -394,15 +386,11 @@ async def roulette_page():
                         }
                     }
                 }, 100);
-            }
+            });
         </script>
     </body>
     </html>
     """
-
-# ---------- ОСТАЛЬНЫЕ ЭНДПОИНТЫ (ДАШБОРД, DROPS, PROMO, СОЗДАНИЕ ЗАДАЧ) ----------
-# (они полностью идентичны предыдущей версии, я не повторяю их для краткости,
-# но в полном файле они должны быть. В этом ответе я привожу полный код, поэтому они есть)
 
 # ---------- ДАШБОРД ----------
 @app.get("/", response_class=HTMLResponse)
